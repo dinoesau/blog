@@ -10,7 +10,7 @@ favicon        = "img/favicon.png"
 SortBy              = "default"
 
 [footer]
-    since      = 2020
+    since      = 2026
     customText = ""
 
 [dateFormat]
@@ -18,18 +18,49 @@ SortBy              = "default"
     lastUpdated = ":date_full"
 
 [sidebar]
-    emoji    = "🍥"
-    subtitle = "Lorem ipsum dolor sit amet, consectetur adipiscing elit."
+    emoji    = "🦕"
+    subtitle = "Personal blog of Esau Martinez"
     avatar   = "img/avatar.png"
 
 [article]
-    headingAnchor = false
-    math          = false
+    headingAnchor = true
+    math          = true
     readingTime   = true
 
     [article.license]
         enabled = true
         default = "Licensed under CC BY-NC-SA 4.0"
+
+    # Mermaid diagram configuration
+    # Diagrams are only loaded when mermaid code blocks are present
+    # Theme auto-switches based on site light/dark mode
+    [article.mermaid]
+        # Visual style: classic or handDrawn (sketch style)
+        look                  = "classic"
+        # Theme for light mode: default, neutral, dark, forest, base, null
+        lightTheme            = "default"
+        # Theme for dark mode: default, neutral, dark, forest, base, null
+        darkTheme             = "dark"
+        # Custom theme variables for light mode (only works with lightTheme: base)
+        # lightThemeVariables = { primaryColor = "#ff0000" }
+        # Custom theme variables for dark mode (only works with darkTheme: base)
+        # darkThemeVariables = { primaryColor = "#00ff00" }
+        # Security level: strict (default), loose, antiscript, sandbox
+        # Set to "loose" to enable HTML labels like <br/>
+        securityLevel         = "strict"
+        # Enable HTML labels in diagrams (requires securityLevel: loose)
+        htmlLabels            = true
+        # Make diagram backgrounds transparent (default: false)
+        # Can also be set per-diagram with %%transparent%% directive
+        transparentBackground = false
+
+    [article.alertIcon]
+        # Alert icons for different alert types (note, tip, important, warning, caution)
+        note      = "📝"
+        tip       = "💡"
+        important = "📌"
+        warning   = "⚠️"
+        caution   = "🚨"
 
 [widgets]
     homepage = [
@@ -41,7 +72,7 @@ SortBy              = "default"
     page = [{ type = "toc" }]
 
 [opengraph.twitter]
-    site = ""
+    site = "https://x.com/esauml_"
     card = "summary_large_image"
 
 [colorScheme]
@@ -50,8 +81,18 @@ SortBy              = "default"
 
 ## Comments
 [comments]
-    enabled  = true
+    enabled  = false
     provider = "disqus"
 
     # See all the available configurations at https://github.com/CaiJimmy/hugo-theme-stack/blob/master/config/_default/params.toml
     # Copy the configurations you need from there and paste it here.
+
+# GDPR Cookie Consent Configuration
+# When enabled, analytics and functional cookies require user consent
+[cookies]
+    enabled      = true
+    showSettings = true
+
+    [cookies.categories]
+        analytics  = true
+        functional = true
