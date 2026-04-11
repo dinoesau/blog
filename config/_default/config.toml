@@ -1,5 +1,5 @@
 # Change baseurl before deploy
-baseurl      = "https://esau.com.mx"
+baseurl      = "https://dinoesau.github.io/blog/"
 languageCode = "en-us"
 title        = "Esau's Blog"
 
