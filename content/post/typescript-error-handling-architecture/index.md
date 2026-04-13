@@ -15,15 +15,17 @@ tags:
     - Clean Code
 ---
 
-## Stop Validating Everywhere: An Architectural Guide to Error Handling in TypeScript
 
 > *A junior developer writes code that assumes everything will go right (no checks).*  
 > *A mid-level developer writes code that assumes everything will go wrong (defensive checks and assertions everywhere).*  
-> *A senior developer uses the type system to make going wrong impossible, deleting 80% of those checks entirely.*
+> *A senior developer uses the type system to make going wrong impossible, deleting 80% of those checks entirely.*<br>
+> — <cite>Software Engineering Proverb</cite>
 
-### 📌 TL;DR
+<!--more-->
 
-* **Validate at the edges (Defensive):** Expect bad data from the outside world. Handle it gracefully using the Result (`val / ok`) pattern instead of throwing unpredictable `try/catch` errors.
+## 📌 TL;DR
+
+* **Validate at the edges (Defensive):** Expect bad data from the outside world. Handle it gracefully using the `val / ok` pattern (the `Result` pattern) instead of throwing unpredictable `try/catch` errors.
 * **Assert in the core (Offensive):** Expect perfect data internally. If your internal state is wrong, it’s a system bug. Use TypeScript's `asserts` keyword to crash immediately (fail-fast).
 * **Parse, Don't Validate:** Don't just check data; transform it at the boundary into **Branded Types** (e.g., `EmailAddress`, `ValidatedUserId`).
 * **The Result:** Your core business logic functions *only* accept Branded Types. This makes invalid states mathematically impossible to represent, allowing you to delete hundreds of lines of defensive `if (!data)` checks.
@@ -71,26 +73,37 @@ Error handling isn’t just about catching mistakes; **it’s about system archi
 
 To fix this, we need to understand the fundamental difference between **Validation** and **Assertion**, adopt the **Result pattern**, and use **Branded Types** to push errors to the absolute edges of our system.
 
----
-
-### Rule 1: Learn the Difference Between Validation and Assertion
+## Rule 1: Learn the Difference Between Validation and Assertion
 
 The most important architectural distinction you can make is understanding the difference between validating data and asserting state.
 
 Think of your application like an exclusive Nightclub.
 
-* **Validation is the bouncer at the front door.** The bouncer *expects* people to hand him fake IDs or be underage. He calmly turns them away (returns a 400 Bad Request). **Validation inspects untrusted external input and recovers gracefully.**
-* **Assertion is the security guard deep inside the VIP room.** The guard *expects* everyone in the room to have a VIP wristband. If someone is in the room without one, the bouncer system has fundamentally failed. The guard stops the music and shuts down the party (crashes the app / logs a critical 500 Error). **Assertions inspect internal logic and fail fast.**
+| Feature | Validation | Assertion |
+| :--- | :--- | :--- |
+| **Location** | The Front Door (API/IO Boundary) | The VIP Room (Core Logic) |
+| **Expectation** | Bad data is *expected* | Data is *trusted* |
+| **Philosophy** | Defensive (Bouncer) | Offensive (Security Guard) |
+| **Outcome** | Graceful Recovery (400 Bad Request) | Immediate Crash (500 System Error) |
+
+* **Validation is the bouncer at the front door.** 
+The bouncer *expects* people to hand him fake IDs or be underage. 
+He calmly turns them away. 
+**Validation inspects untrusted external input and recovers gracefully.**
+
+* **Assertion is the security guard deep inside the VIP room.** 
+The guard *expects* everyone in the room to have a VIP wristband. 
+If someone is in the room without one, the bouncer system has fundamentally failed. 
+The guard stops the music and shuts down the party. 
+**Assertions inspect internal logic and fail fast.**
 
 When you mix these up, systems become fragile. If you crash the app when a user types a bad email, you have a terrible UX. If you try to "gracefully recover" when a database query returns an impossible state—like a negative account balance—you silently corrupt your data.
 
----
-
-### Rule 2: At the Edge, Treat Errors as Values
+## Rule 2: At the Edge, Treat Errors as Values
 
 When data arrives from the outside world (API input, DB reads), it is untrusted. Because we *expect* bad data, throwing exceptions is an anti-pattern. `throw` is essentially a hidden `GOTO` statement that destroys TypeScript's type safety (the error in a catch block is always typed as `unknown`).
 
-Instead, we use the **`val / ok` pattern** (the Result pattern), heavily inspired by Go and Rust. We treat errors as standard return values.
+Instead, we use the **`val / ok` pattern** (the `Result` pattern), heavily inspired by Go and Rust. We treat errors as standard return values.
 
 ```typescript
 // The Result Type Blueprint
@@ -110,15 +123,14 @@ async function parseJson(req: Request): Promise<Result<unknown, string>> {
 
 By returning a `Result`, the TypeScript compiler *forces* the caller to handle the failure before they are allowed to access `value`. We've eliminated the silent boundary leak.
 
----
-
-### Rule 3: Parse, Don't Validate
+## Rule 3: Parse, Don't Validate
 
 Now that we have safely parsed the JSON, we need to ensure it has the correct shape. But traditional validation has a massive flaw: **it doesn't leave a receipt.**
 
 If you write a function `isValidEmail(input): boolean`, and it returns `true`, TypeScript still just sees a `string`. If you pass that string down through five other files, none of those files *know* it was validated. So, mid-level developers defensively re-validate the string everywhere.
 
-To fix this, we use the **"Parse, Don't Validate"** paradigm. We use schema parsers (like Zod) combined with **Branded Types** to make invalid states *impossible to represent*.
+To fix this, we use the **"Parse, Don't Validate"** paradigm [^1]. 
+We use schema parsers (like Zod [^2]) combined with **Branded Types** to make invalid states *impossible to represent*.
 
 ```typescript
 import { z } from "zod";
@@ -143,9 +155,7 @@ function parseRefundRequest(data: unknown): Result<z.infer<typeof RefundSchema>,
 }
 ```
 
----
-
-### Rule 4: Inside the Core, Assert and Crash
+## Rule 4: Inside the Core, Assert and Crash
 
 Once data has passed the Smart Constructor, it is inside our trusted domain. We shouldn't be handling expected validation errors anymore. We are dealing with internal system invariants.
 
@@ -161,9 +171,7 @@ function assertOk<T>(result: Result<T, Error>): asserts result is { ok: true; va
 }
 ```
 
----
-
-### The Grand Architecture: Layers of Trust
+## The Grand Architecture: Layers of Trust
 
 Let's look at the "Before" code from the beginning of this article, refactored into the **Layers of Trust** architecture.
 
@@ -210,9 +218,13 @@ async function processRefundRoute(req: Request, res: Response) {
 }
 ```
 
-### The Takeaway
+## The Takeaway
 
-Look at the `executeRefund` function above. It is completely pure. There are no `if` statements checking for empty strings. There are no `typeof` checks. **Your cognitive load drops to zero.**
+Look at the `executeRefund` function above. 
+It is completely pure. 
+There are no `if` statements checking for empty strings. 
+There are no `typeof` checks. 
+**Your cognitive load drops to zero.**
 
 To stop fighting TypeScript and start leveraging it as an architectural tool, memorize this paradigm:
 
@@ -220,4 +232,8 @@ To stop fighting TypeScript and start leveraging it as an architectural tool, me
 2. **Assertion is Offensive.** You expect your internal logic to be flawless. Use `asserts` to fail-fast, crash, and return 500-level errors when system invariants are broken.
 3. **Encode Trust in Types.** Push validation to the edges, use Smart Constructors to create Branded Types, make invalid states unrepresentable, and delete the rest of your runtime checks.
 
-Correctness is so important that any violation of internal logic is a bug. Build strict boundaries, trust your types, and watch your codebase become infinitely more resilient.
+Correctness is so important that any violation of internal logic is a bug. 
+<mark>Build strict boundaries, trust your types, and watch your codebase become infinitely more resilient.</mark>
+
+[^1]: This concept was popularized by Alexis King in her seminal essay [Parse, Don't Validate](https://lexi-lambda.github.io/blog/2019/11/05/parse-don-t-validate/).
+[^2]: [Zod](https://zod.dev/) is a TypeScript-first schema declaration and validation library.
