@@ -7,6 +7,8 @@
 #icon = "home"
 #newtab = true
 
+## Icons are from https://tabler.io/icons
+
 [[social]]
     identifier = "github"
     name       = "GitHub"
@@ -22,3 +24,14 @@
 
     [social.params]
         icon = "brand-linkedin"
+
+# mail social contact@esau.com.mx
+[[social]]
+    identifier = "email"
+    name       = "Email"
+    url        = "mailto:contact@esau.com.mx"
+
+    [social.params]
+        icon = "mail"
+
+
