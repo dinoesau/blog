@@ -35,6 +35,30 @@ Use the `relref` shortcode, never relative paths:
 Relative paths like `../foo/` resolve against the rendered permalink (`/p/:slug/`) and 404.
 `relref` paths are relative to the language content root and resolve to the same-language page.
 
+## Post front matter extras
+
+- `description` - shown in SEO meta and social previews; always set it on real posts.
+- `image: cover.png` - adds a cover: OG/Twitter cards (`summary_large_image`), responsive article image, and homepage thumbnails.
+- `series: ["Error Handling"]` - groups posts into a "Series" taxonomy shown in the sidebar widget. See `/series/error-handling/`.
+
+## Cover images
+
+Real posts need a `cover.png` in BOTH the en and es page bundles, with `image: cover.png` in both front matters.
+
+The covers are branded 1200x630 PNGs (OG ratio 1.91:1) generated from a template SVG via `rsvg-convert` (macOS: `/opt/homebrew/bin/rsvg-convert`):
+
+1. Write an SVG with the brand gradient `#1e3a8a` → `#0e7490`, the `EM` monogram in white `Arial, Helvetica, sans-serif` (centered), and a light accent bar `#7dd3fc`.
+   Do NOT put the post title in the image: covers are reused as 250x150 tiles in "Related content" where embedded text becomes unreadable and duplicates the tile title.
+   Use the same monogram design for both languages (no text means no language-specific SVG).
+2. Render to PNG (scale the SVG to 1200x630 so the monogram stays crisp):
+   ```bash
+   rsvg-convert -w 1200 -h 630 -o content/en/post/<slug>/cover.png cover.svg
+   rsvg-convert -w 1200 -h 630 -o content/es/post/<slug>/cover.png cover.svg
+   ```
+3. Set `image: cover.png` in both `index.md` front matters.
+
+`svg` files are just the source template; only the PNGs are committed.
+
 ## Keep labels and categories in sync
 
 `labels.md` and `categories.md` at the repo root track the tags and categories used across posts.
