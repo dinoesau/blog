@@ -2,6 +2,7 @@
 title: "Deja de Validar en Todas Partes: Una Guía Arquitectónica para el Manejo de Errores en Python"
 description: "Aprende a construir aplicaciones Python resilientes distinguiendo entre validación y aserciones, implementando el patrón Result y usando NewTypes para hacer que los estados inválidos sean irrepresentables."
 date: 2026-04-13
+image: cover.png
 categories:
     - Software Architecture
     - Python
@@ -13,6 +14,8 @@ tags:
     - Pydantic
     - NewType
     - Clean Code
+series:
+    - Error Handling
 ---
 
 

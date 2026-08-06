@@ -2,6 +2,7 @@
 title: "Deja de Validar en Todas Partes: Una Guía Arquitectónica para el Manejo de Errores en TypeScript"
 description: "Aprende a construir aplicaciones TypeScript resilientes distinguiendo entre validación y aserciones, implementando el patrón Result y usando Branded Types para hacer que los estados inválidos sean irrepresentables."
 date: 2026-04-13
+image: cover.png
 categories:
     - Software Architecture
     - TypeScript
@@ -13,6 +14,8 @@ tags:
     - Zod
     - Branded Types
     - Clean Code
+series:
+    - Error Handling
 ---
 
 

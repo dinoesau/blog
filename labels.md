@@ -12,7 +12,7 @@
 - Coding Style
 - Consistency
 - Developer Experience
-- AGENTS.md
+- AGENTS
 - LLM
 - Skills
 - markdown
