@@ -42,6 +42,30 @@
         [en.menus.main.params]
             icon = "link"
 
+    [[en.menus.social]]
+        identifier = "github"
+        name       = "GitHub"
+        url        = "https://github.com/dinoesau"
+
+        [en.menus.social.params]
+            icon = "brand-github"
+
+    [[en.menus.social]]
+        identifier = "linkedin"
+        name       = "LinkedIn"
+        url        = "https://www.linkedin.com/in/esaum/"
+
+        [en.menus.social.params]
+            icon = "brand-linkedin"
+
+    [[en.menus.social]]
+        identifier = "email"
+        name       = "Email"
+        url        = "mailto:contact@esau.com.mx"
+
+        [en.menus.social.params]
+            icon = "mail"
+
 [es]
     languageName      = "Español"
     languagedirection = "ltr"
@@ -88,3 +112,27 @@
 
         [es.menus.main.params]
             icon = "link"
+
+    [[es.menus.social]]
+        identifier = "github"
+        name       = "GitHub"
+        url        = "https://github.com/dinoesau"
+
+        [es.menus.social.params]
+            icon = "brand-github"
+
+    [[es.menus.social]]
+        identifier = "linkedin"
+        name       = "LinkedIn"
+        url        = "https://www.linkedin.com/in/esaum/"
+
+        [es.menus.social.params]
+            icon = "brand-linkedin"
+
+    [[es.menus.social]]
+        identifier = "email"
+        name       = "Email"
+        url        = "mailto:contact@esau.com.mx"
+
+        [es.menus.social.params]
+            icon = "mail"
