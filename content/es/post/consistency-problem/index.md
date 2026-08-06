@@ -2,6 +2,7 @@
 title: "El Problema de la Consistencia: Por Qué el Código de la IA Se Siente Ajeno (y Cómo Hacer que Escriba Como Tú)"
 description: "El código generado por IA rara vez es el problema. El problema real es que no es TU código. Aprende por qué el estilo de programación personal es el cuello de botella oculto del desarrollo asistido por IA, qué dice la investigación y cómo codificar tu propio estilo en contexto reutilizable."
 date: 2026-08-04
+image: cover.png
 categories:
     - Software Architecture
     - AI Engineering
@@ -10,10 +11,12 @@ tags:
     - AI Code Generation
     - Coding Style
     - Consistency
-    - AGENTS.md
+    - AGENTS
     - Developer Experience
     - LLM
     - Skills
+series:
+    - Error Handling
 ---
 
 > *Cada línea de código que lees pero no escribiste es una línea que tienes que pensar dos veces.*

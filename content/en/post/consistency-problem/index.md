@@ -2,6 +2,7 @@
 title: "The Consistency Problem: Why AI Code Feels Alien (and How to Make It Write Like You)"
 description: "AI-generated code is rarely the problem. The real problem is that it is not YOUR code. Learn why personal coding style is the hidden bottleneck of AI-assisted development, what the research says, and how to codify your own style into reusable context."
 date: 2026-08-04
+image: cover.png
 categories:
     - Software Architecture
     - AI Engineering
@@ -10,10 +11,12 @@ tags:
     - AI Code Generation
     - Coding Style
     - Consistency
-    - AGENTS.md
+    - AGENTS
     - Developer Experience
     - LLM
     - Skills
+series:
+    - Error Handling
 ---
 
 > *Every line of code you read but did not write is a line you have to think about twice.*

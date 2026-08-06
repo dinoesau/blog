@@ -2,6 +2,7 @@
 title: "Stop Validating Everywhere: An Architectural Guide to Error Handling in TypeScript"
 description: "Learn how to build resilient TypeScript applications by distinguishing between validation and assertions, implementing the Result pattern, and using Branded Types to make invalid states unrepresentable."
 date: 2026-04-13
+image: cover.png
 categories:
     - Software Architecture
     - TypeScript
@@ -13,6 +14,8 @@ tags:
     - Zod
     - Branded Types
     - Clean Code
+series:
+    - Error Handling
 ---
 
 

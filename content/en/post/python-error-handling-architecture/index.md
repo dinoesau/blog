@@ -2,6 +2,7 @@
 title: "Stop Validating Everywhere: An Architectural Guide to Error Handling in Python"
 description: "Learn how to build resilient Python applications by distinguishing between validation and assertions, implementing the Result pattern, and using NewTypes to make invalid states unrepresentable."
 date: 2026-04-13
+image: cover.png
 categories:
     - Software Architecture
     - Python
@@ -13,6 +14,8 @@ tags:
     - Pydantic
     - NewType
     - Clean Code
+series:
+    - Error Handling
 ---
 
 

@@ -3,6 +3,8 @@ mainSections = ["post"]
 # Output page's full content in RSS.
 rssFullContent = true
 favicon        = "img/favicon.svg"
+# Site-level SEO description (falls back to the sidebar subtitle if unset).
+description = "Personal blog about software architecture, TypeScript, Python, and AI-assisted development, written in English and Spanish."
 
 # Accepted values: "default", "lastmod"
 # default = see https://gohugo.io/quick-reference/glossary/#default-sort-order
@@ -11,7 +13,7 @@ SortBy              = "default"
 
 [footer]
     since      = 2026
-    customText = ""
+    customText = "Built with Hugo &amp; Stack"
 
 [dateFormat]
     published   = ":date_full"
@@ -71,6 +73,7 @@ SortBy              = "default"
         { type = "search" },
         { type = "archives", params = { limit = 5 } },
         { type = "categories", params = { limit = 10 } },
+        { type = "taxonomy", params = { taxonomy = "series", limit = 10, title = "Series", icon = "link" } },
         { type = "tag-cloud", params = { limit = 10 } },
     ]
     page = [{ type = "toc" }]
