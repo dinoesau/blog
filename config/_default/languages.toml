@@ -74,6 +74,9 @@
     weight            = 2
     contentDir        = "content/es"
 
+    [es.params]
+        description = "Blog personal sobre arquitectura de software, TypeScript, Python y desarrollo asistido por IA, escrito en inglés y español."
+
     [es.params.sidebar]
         subtitle = "Notas sobre computación, matemáticas y literatura, intercaladas con jardinería, fotografía y el arte de aprender."
 
