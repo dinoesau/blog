@@ -27,6 +27,10 @@ SortBy              = "default"
     math          = true
     readingTime   = true
 
+    [article.list]
+        # Show tags under posts in list views (homepage, sections)
+        showTags = true
+
     [article.license]
         enabled = true
         default = "Licensed under CC BY-NC-SA 4.0"
@@ -78,6 +82,20 @@ SortBy              = "default"
 [colorScheme]
     toggle  = true
     default = "auto"
+
+[imageProcessing]
+    # Orient images from their EXIF data (fixes rotated phone photos)
+    autoOrient = true
+
+    [imageProcessing.external]
+        timeout = "5s"
+
+    [imageProcessing.content]
+        widths  = [800, 1600, 2400]
+        enabled = true
+
+    [imageProcessing.thumbnail]
+        enabled = true
 
 ## Comments
 [comments]

@@ -1,6 +1,12 @@
 # Change baseurl before deploy
 baseurl = "https://dinoesau.github.io/blog/"
 
+# Interpret front matter dates in this zone regardless of the build machine's TZ.
+timeZone = "America/Mexico_City"
+
+# Populate .Lastmod from git history so "last updated" dates stay accurate.
+enableGitInfo = true
+
 # Language title, languageCode and params are defined per-language in languages.toml
 # English (default) is served from the root, Spanish from /es/
 defaultContentLanguage = "en"
