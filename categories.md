@@ -5,5 +5,6 @@
 - Python
 - Development Patterns
 - AI Engineering
+- Personal Finance
 - themes
 - syntax

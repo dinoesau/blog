@@ -15,6 +15,14 @@
 - AGENTS
 - LLM
 - Skills
+- Swensen
+- Endowment Model
+- Investing
+- Asset Allocation
+- GBM
+- FIBRAs
+- Index Funds
+- Personal Finance
 - markdown
 - css
 - html
