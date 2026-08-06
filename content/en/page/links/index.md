@@ -65,12 +65,6 @@ links:
     website: https://goodfirstissue.dev/language/typescript
     image: https://goodfirstissue.dev/favicon.png
 
-menu:
-    main: 
-        weight: 4
-        params:
-            icon: link
-
 comments: false
 ---
 

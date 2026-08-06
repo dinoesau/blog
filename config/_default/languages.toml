@@ -1,0 +1,90 @@
+[en]
+    languageName      = "English"
+    languagedirection = "ltr"
+    languageCode      = "en-us"
+    title             = "Esau Martinez's Blog"
+    weight            = 1
+    contentDir        = "content/en"
+
+    [[en.menus.main]]
+        identifier = "home"
+        name       = "Home"
+        pageRef    = "/"
+        weight     = 1
+
+        [en.menus.main.params]
+            icon = "home"
+
+    [[en.menus.main]]
+        identifier = "archives"
+        name       = "Archives"
+        pageRef    = "/page/archives"
+        weight     = 2
+
+        [en.menus.main.params]
+            icon = "archives"
+
+    [[en.menus.main]]
+        identifier = "search"
+        name       = "Search"
+        pageRef    = "/page/search"
+        weight     = 3
+
+        [en.menus.main.params]
+            icon = "search"
+
+    [[en.menus.main]]
+        identifier = "links"
+        name       = "Links"
+        pageRef    = "/page/links"
+        weight     = 4
+
+        [en.menus.main.params]
+            icon = "link"
+
+[es]
+    languageName      = "Español"
+    languagedirection = "ltr"
+    languageCode      = "es-mx"
+    title             = "Blog de Esau Martinez"
+    weight            = 2
+    contentDir        = "content/es"
+
+    [es.params.sidebar]
+        subtitle = "Notas sobre computación, matemáticas y literatura, intercaladas con jardinería, fotografía y el arte de aprender."
+
+    [[es.menus.main]]
+        identifier = "home"
+        name       = "Inicio"
+        pageRef    = "/"
+        weight     = 1
+
+        [es.menus.main.params]
+            icon = "home"
+
+    [[es.menus.main]]
+        identifier = "archives"
+        name       = "Archivo"
+        pageRef    = "/page/archives"
+        weight     = 2
+
+        [es.menus.main.params]
+            icon = "archives"
+
+    [[es.menus.main]]
+        identifier = "search"
+        name       = "Búsqueda"
+        pageRef    = "/page/search"
+        weight     = 3
+
+        [es.menus.main.params]
+            icon = "search"
+
+    [[es.menus.main]]
+        identifier = "links"
+        name       = "Enlaces"
+        pageRef    = "/page/links"
+        weight     = 4
+
+        [es.menus.main.params]
+            icon = "link"

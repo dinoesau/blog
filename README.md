@@ -30,7 +30,17 @@ Abrir `http://localhost:1313` en el navegador.
 |---|---|
 | `hugo server` | Servidor de desarrollo con recarga automática |
 | `hugo` | Build del sitio en `public/` |
-| `hugo new content/post/mi-post/index.md` | Crear un nuevo post |
+| `hugo new content/en/post/mi-post/index.md` | Crear un post en inglés |
+| `hugo new content/es/post/mi-post/index.md` | Crear un post en español |
+
+## Idiomas
+
+El sitio es bilingüe (inglés y español). El contenido se organiza por idioma:
+
+- `content/en/` - contenido en inglés (idioma por defecto, servido en la raíz)
+- `content/es/` - contenido en español (servido bajo `/es/`)
+
+Los títulos, menús y parámetros por idioma se configuran en `config/_default/languages.toml`.
 
 ## Publicar un post
 
