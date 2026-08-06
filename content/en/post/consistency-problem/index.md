@@ -247,5 +247,5 @@ The goal was never to generate more correct code. The goal is to generate code y
 [^13]: [Maintaining AI-Generated Code Consistency with Team Style Guides](https://www.onspace.ai/blog/ai-code-consistency-style-guides), 2025.
 [^14]: [The AI Code Generation Consistency Matrix](https://nosemicolons.com/posts/ai-code-generation-consistency-matrix/), 2026.
 [^15]: [dinoesau/skills](https://github.com/dinoesau/skills/tree/main/skills) is a repository of reusable skills, including error-handling, coding-guide, and to-plan.
-[^16]: [Stop Validating Everywhere: An Architectural Guide to Error Handling in TypeScript](../typescript-error-handling-architecture/)
-[^17]: [Stop Validating Everywhere: An Architectural Guide to Error Handling in Python](../python-error-handling-architecture/)
+[^16]: [Stop Validating Everywhere: An Architectural Guide to Error Handling in TypeScript]({{< relref "/post/typescript-error-handling-architecture" >}})
+[^17]: [Stop Validating Everywhere: An Architectural Guide to Error Handling in Python]({{< relref "/post/python-error-handling-architecture" >}})

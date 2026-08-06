@@ -2,5 +2,8 @@
 
 - Software Architecture
 - TypeScript
+- Python
 - Development Patterns
-- TEST
+- AI Engineering
+- themes
+- syntax

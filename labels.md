@@ -6,4 +6,16 @@
 - Zod
 - Branded Types
 - Clean Code
-- TEST
+- NewType
+- Pydantic
+- AI Code Generation
+- Coding Style
+- Consistency
+- Developer Experience
+- AGENTS.md
+- LLM
+- Skills
+- markdown
+- css
+- html
+- themes
