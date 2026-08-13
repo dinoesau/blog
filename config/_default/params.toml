@@ -124,4 +124,4 @@ SortBy              = "default"
 # visitor grants analytics consent via the cookie banner.
 # Get a token at https://dash.cloudflare.com -> Analytics -> Web Analytics -> Add a site (JS snippet).
 [analytics.cloudflare]
-    token = "7a493c66452143cebae9d3952b4a97e4"
+    token = "443f82af332246979100ffa94b25dc52"
