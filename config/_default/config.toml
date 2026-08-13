@@ -1,6 +1,9 @@
 # Change baseurl before deploy
 baseurl = "https://esau.com.mx/"
 
+# Generate a robots.txt pointing at the sitemap (crawl control for search engines).
+enableRobotsTXT = true
+
 # Interpret front matter dates in this zone regardless of the build machine's TZ.
 timeZone = "America/Mexico_City"
 
