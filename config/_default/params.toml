@@ -79,7 +79,8 @@ SortBy              = "default"
     page = [{ type = "toc" }]
 
 [opengraph.twitter]
-    site = "https://x.com/esauml_"
+    # The theme renders twitter:site as "@{{ . }}", so this is the bare handle.
+    site = "esauml_"
     card = "summary_large_image"
 
 [colorScheme]
@@ -117,3 +118,10 @@ SortBy              = "default"
     [cookies.categories]
         analytics  = true
         functional = true
+
+# Cloudflare Web Analytics
+# Cookie-free, privacy-first analytics. The beacon only loads after the
+# visitor grants analytics consent via the cookie banner.
+# Get a token at https://dash.cloudflare.com -> Analytics -> Web Analytics -> Add a site (JS snippet).
+[analytics.cloudflare]
+    token = "443f82af332246979100ffa94b25dc52"

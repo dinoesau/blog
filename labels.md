@@ -8,6 +8,13 @@
 - Clean Code
 - NewType
 - Pydantic
+- Machine Learning
+- scikit-learn
+- FastAPI
+- MLflow
+- MLOps
+- Data Science
+- joblib
 - AI Code Generation
 - Coding Style
 - Consistency
