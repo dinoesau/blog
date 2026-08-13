@@ -117,3 +117,10 @@ SortBy              = "default"
     [cookies.categories]
         analytics  = true
         functional = true
+
+# Cloudflare Web Analytics
+# Cookie-free, privacy-first analytics. The beacon only loads after the
+# visitor grants analytics consent via the cookie banner.
+# Get a token at https://dash.cloudflare.com -> Analytics -> Web Analytics -> Add a site (JS snippet).
+[analytics.cloudflare]
+    token = ""

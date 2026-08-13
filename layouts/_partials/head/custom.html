@@ -7,3 +7,41 @@
         --article-font-family: "Merriweather", var(--base-font-family);
     }
 </style>
+
+{{- with site.Params.analytics.cloudflare.token -}}
+<script>
+    (function () {
+        var token = {{ . }};
+        var loaded = false;
+
+        function loadBeacon() {
+            if (loaded) return;
+            loaded = true;
+
+            var script = document.createElement('script');
+            script.async = true;
+            script.src = 'https://static.cloudflareinsights.com/beacon.min.js';
+            script.setAttribute('data-cf-beacon', JSON.stringify({ token: token }));
+            document.head.appendChild(script);
+        }
+
+        function init() {
+            if (document.documentElement.dataset.consentAnalytics === 'true') {
+                loadBeacon();
+            }
+        }
+
+        window.addEventListener('onCookieConsentChange', function (e) {
+            if (e.detail && e.detail.analytics) {
+                loadBeacon();
+            }
+        });
+
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', init);
+        } else {
+            init();
+        }
+    })();
+</script>
+{{- end -}}
