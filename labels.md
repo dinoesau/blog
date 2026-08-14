@@ -34,3 +34,8 @@
 - css
 - html
 - themes
+- Git
+- Git Worktrees
+- Stacked PRs
+- GitHub CLI
+- Worktrunk
