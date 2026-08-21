@@ -24,10 +24,11 @@ tags:
 
 ## TL;DR
 
-* **Una tarea = un worktree.** Los worktrees te permiten tener varias ramas checkout al mismo tiempo, cada una en su propia carpeta, sin cambiar de contexto.
+* **Trabajar en una sola cosa a la vez se acabó.** Hoy es normal llevar varias tareas dentro del mismo repo y varios proyectos a la vez. Este flujo lo hace el caso por defecto.
+* **Vendor-agnostic por diseño.** La interfaz es Git, no el editor. Cualquier agente que escriba en una carpeta funciona igual dentro de un worktree - sin lock-in.
+* **Salta sin fricción, entre proyectos y entre tareas.** `wt` y los pickers `wts`/`wtl` cambian de worktree en segundos, ya sea a otro proyecto o a otra rama del mismo proyecto.
+* **Los stacked PRs son el lente para revisar código generado por IA.** `gh stack` convierte un diff gigante de IA en una cadena de PRs pequeños, bottom-up, que sí se pueden revisar.
 * **Worktrunk (`wt`) elimina la fricción.** Reemplaza los comandos verbosos de `git worktree`, copia tus archivos locales ignorados (`.env`, caches) a los worktrees nuevos, instala dependencias y configura el upstream automáticamente vía hooks.
-* **Los stacked PRs mantienen las reviews pequeñas.** `gh stack` convierte una cadena de ramas dependientes en una cadena de PRs pequeños que se fusionan de abajo hacia arriba.
-* **Las herramientas apenas se tocan.** `wt` gestiona carpetas y navegación, `gh stack` gestiona ramas y PRs. Solo se tocan al inicio (crear el worktree) y al final (limpieza).
 
 ---
 
@@ -35,12 +36,16 @@ Todo desarrollador tiene una relación de amor-odio con las ramas de Git.
 
 Las ramas son baratas de crear y caras de mantener. Si cambio a otra rama, mi trabajo sin commitear me sigue, las dependencias instaladas quedan viejas y mi `.env` o se filtra al repo o no existe en la rama nueva.
 
-Dos dolores dan forma a cómo diseño un flujo de trabajo:
+Trabajar en una sola cosa a la vez se acabó. En un día típico llevo varias tareas dentro del mismo proyecto y dos o tres proyectos a la vez. El flujo viejo - `stash`, cambiar de rama, reinstalar, recordar dónde estabas - no escala cuando un agente puede generar una feature completa en un worktree mientras revisas otra.
 
-* Cambiar de tarea no debería costar más de unos segundos.
-* Un PR debería ser lo bastante pequeño como para que un revisor lo entienda de una sentada.
+Por eso busqué un setup vendor-agnostic. La interfaz es Git, no el editor. Da igual si el código lo escribió tu agente favorito, un colega o tú - cae en una carpeta que se comporta igual.
 
-Este post documenta el setup en el que aterricé después de probar varias aproximaciones: un repositorio Git bare, worktrees gestionados por Worktrunk (`wt`) y stacked PRs creados con `gh stack`.
+Dos propiedades dan forma al flujo en el que aterricé:
+
+* Saltar entre proyectos y entre tareas dentro de un proyecto debe costar segundos, no minutos.
+* Un PR - sobre todo uno generado por IA - debe ser lo bastante pequeño como para entenderlo de una sentada. Los stacked PRs son el lente que hace revisable el código de IA.
+
+Este post documenta el setup en el que aterricé después de probar varias aproximaciones: un repositorio Git bare, worktrees gestionados por Worktrunk (`wt`) y stacked PRs creados con `gh stack`. Es el mismo setup probado de antes, ahora enmarcado para cómo trabajamos hoy.
 
 Así se ve todo de un vistazo:
 
@@ -271,9 +276,20 @@ alias wtr="wt remove"
 Requisitos: `jq` y `fzf` instalados.
 El wrapper `wt()` de `worktrunk config shell init` (ya cargado en `.zshrc`) se encarga del `cd` automático al cambiar de worktree.
 
+### Saltar entre proyectos y entre tareas
+
+El mismo flujo `wts`/`wtl` sirve entre proyectos y entre tareas dentro de un proyecto - sin tooling extra.
+
+* **Entre proyectos:** mantengo cada repo como su propio setup bare (`mi-proyecto/`, `otro-proyecto/`). `wtl` es por proyecto, pero `wts` (el picker fzf de arriba) más un `cd` rápido a la raíz del otro proyecto da el mismo cambio en segundos. Sin `stash`, sin esperar reinstalaciones - cada worktree conserva su propio `node_modules` y `.env` vía hooks y `.worktreeinclude`.
+* **Entre tareas en un proyecto:** `wts -c` abre un worktree por tarea (`fix/auth`, `feat/payments`) mientras un agente sigue trabajando en el otro. Puedo tener código generándose en `feature-login` mientras reviso un stacked PR en `fix/issue/ui` - cada carpeta es un checkout totalmente funcional.
+
+Esto es lo que hace que el setup sea vendor-agnostic en la práctica: el agente solo ve un directorio normal. Da igual qué agente escribió el código - el costo de cambiar es el mismo.
+
 ## 4. Stacked PRs + Worktrunk
 
-El principio: una tarea = un worktree; el stack completo vive dentro del worktree creado por `wts -c`.
+Los stacked PRs son el lente que hace revisable el código generado por IA. Un agente puede producir fácilmente un diff de 600 líneas que nadie puede revisar de una sentada. Dividirlo en un stack (`db -> api -> ui`) lo convierte en una cadena de PRs pequeños, bottom-up, que un revisor - o tú mañana - puede entender capa por capa.
+
+El principio se mantiene: un stack vive dentro del worktree creado por `wts -c`.[^stack-worktree]
 
 `wt` gestiona worktrees y navegación; `gh stack` gestiona ramas y PRs. Los dos flujos son independientes y solo se tocan al inicio (crear el worktree) y al final (limpieza).
 
@@ -309,14 +325,12 @@ wtr                         # remueve el worktree, borra ui (integrada) y te cd 
 
 ### Por qué el final funciona así
 
-`gh stack sync --prune` intenta `git checkout devel` para moverte al trunk, pero git lo prohíbe porque `devel` tiene su propio worktree ("already checked out at ..."). Tampoco puede borrar `ui`: está checkout en el worktree del stack. Que el terminal quede "colgado" en `ui` es esperado.
+`gh stack sync --prune` intenta `git checkout devel` para moverte al trunk, pero git lo prohíbe porque `devel` tiene su propio worktree ("already checked out at ..."). Tampoco puede borrar `ui`: está checkout en el worktree del stack. Que el terminal quede "colgado" en `ui` es esperado.[^detalles-final]
 
-`wtr` resuelve todo desde el mismo worktree: la remoción renombra el worktree a `.git/wt/trash/` primero, luego borra la rama (check de integración; con squash merge funciona vía patch-id match) y worktrunk mueve el shell al worktree primario ("Switched to worktree for main").
+`wtr` resuelve todo desde el mismo worktree: la remoción renombra el worktree a `.git/wt/trash/` primero, luego borra la rama y worktrunk mueve el shell al worktree primario ("Switched to worktree for main").[^detalles-final]
 
 Notas:
 - Worktree con cambios sin commitear: `wtr -f`; rama no reconocida como integrada: `wtr -D`.
-- `wt list` muestra `branch_mismatch` en el worktree del stack mientras viva el stack: cosmético.
-- `gh stack trunk` y la navegación hacia el trunk fallan con worktrees; usar `wts ^`.
 - `gh stack sync` (sin `--prune`) funciona durante el desarrollo: las ramas del stack solo existen en el worktree del stack.
 
 ### `gh stack submit --auto`
@@ -344,6 +358,12 @@ alias wsp="gh stack sync --prune && wts ^"
 ```
 
 Variante que vuelve al trunk y deja el worktree del stack para limpiar después con `wt remove <rama>`. Si prefieres terminar en el worktree primario con un solo comando, usa `wtr` directo.
+
+> **Mención honorífica: usuarios de Herdr**
+> Si ya usas [Herdr](https://herdr.dev) (`brew install herdr`), este flujo no necesita cambios. Herdr es dueño de las terminales (workspaces/tabs/panes en un server persistente con detección `working`/`blocked`/`done`), `wt` es dueño de los checkouts de Git. Un tab de Herdr por worktree es el mapeo natural, y `herdr` reattach mantiene los agentes vivos aunque cierres la tapa. Los stacked PRs y `wtr`/`wsp` funcionan igual dentro de un pane de Herdr.
+
+[^stack-worktree]: Todo el stack vive dentro de una sola carpeta de worktree; `gh stack add` rota la rama checkout dentro de esa misma carpeta, así que nunca pagas un cambio de directorio.
+[^detalles-final]: Detalles de bajo nivel: `wtr` verifica si la rama está integrada antes de borrarla - con squash merges funciona vía `patch-id` matching. Mientras viva el stack `wt list` puede mostrar `branch_mismatch` en el worktree del stack - cosmético. `gh stack trunk` y la navegación hacia el trunk no funcionan con worktrees; usa `wts ^`.
 
 ## 5. Solución de problemas
 
@@ -409,6 +429,8 @@ git push -u origin <rama>
 
 Ese es el flujo completo.
 
-Me costó tiempo apreciar lo que los worktrees y los stacked PRs dan juntos. El worktree elimina el costo de cambiar de contexto, y `gh stack` elimina el costo de mantener un PR pequeño. Las dos herramientas compensan sus bordes ásperos: la rama donde está checkout el stack cambia seguido, pero nunca lo notas porque ocurre dentro de una sola carpeta.
+Lo que más valoro ahora no es solo la mecánica de Git sino cómo encaja con la forma en que trabajamos hoy: tareas en paralelo dentro de un proyecto y saltos entre proyectos son la norma, la terminal y Git son el contrato que cualquier agente puede usar, y los stacked PRs mantienen revisable el código generado por IA en lugar de un muro de 600 líneas.
+
+El worktree elimina el costo de cambiar de contexto, y `gh stack` elimina el costo de mantener un PR pequeño. Las dos herramientas compensan sus bordes ásperos: la rama donde está checkout el stack cambia seguido, pero nunca lo notas porque ocurre dentro de una sola carpeta.
 
 Si lo pruebas, te recomiendo empezar pequeño: configura el repo bare y `wt`, mantén el `git push -u` manual un tiempo, y solo agrega `gh stack` una vez que el loop de worktrees te sienta natural.
