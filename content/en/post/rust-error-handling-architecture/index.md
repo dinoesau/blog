@@ -42,16 +42,15 @@ Use `thiserror` for exhaustive domain errors in libraries and `anyhow` with cont
 * **Push invariants into the compiler.**
 Use the type-state pattern, zero-cost borrowed newtypes, and a pure functional core wrapped by a thin Axum and Serde shell.
 * This post is the Rust chapter of the Error Handling series.
-If you come from TypeScript, start with [Stop Validating Everywhere in TypeScript]({{< relref "/post/typescript-error-handling-architecture" >}}).
-If you come from Python, compare with [Stop Validating Everywhere in Python]({{< relref "/post/python-error-handling-architecture" >}}).
+It assumes only Rust and builds every pattern from `Result`, modules, traits, and ownership.
 
 ---
 
 ## 1. Introduction: The Antipattern of Defensive Rust
 
-If you come from TypeScript or Python, you bring a survival habit with you.
-You check every input in every function because the type system erased the proof two calls ago.
-In Rust, copying that habit is expensive and unnecessary.
+The tempting habit is to check every input in every function.
+You validate the same `String` in the handler, then in the service, then in the repository, because no signature records what was already proven.
+In Rust, that habit is expensive and unnecessary.
 The compiler is not a syntax checker.
 It is a compile-time theorem prover, and defensive `if` chains waste it.
 
@@ -402,7 +401,7 @@ That is encapsulation without runtime cost.
 ## 4. Pillar 2: Functional Foundations (Algebraic Data Types and Total Functions)
 
 Paul Chiusano and Runar Bjarnason teach this in *Functional Programming in Scala*, often called the Red Book.
-Model with precise types, write total functions, and compose with combinators instead of branching on exceptions.
+Model with precise types, write total functions, and compose with combinators instead of unwinding the stack with panics.
 Rust enums and structs are algebraic data types, and `Result` is your `Either` monad.
 
 Sum types enumerate exclusive alternatives.
@@ -440,12 +439,12 @@ pub struct Order {
 }
 ```
 
-There is no null, no undefined, and no stringly typed method field.
+There is no null, no implicit missing value, and no stringly typed method field.
 A `match` on `PaymentMethod` must handle every arm or the build fails.
 That exhaustiveness is a proof about your business branches.
 
 A total function is defined for 100 percent of its input values.
-It never panics, never blocks on hidden input, and never throws across the stack.
+It never panics, never blocks on hidden input, and never unwinds across the stack.
 A partial function pretends to be total but explodes on some inputs.
 
 ```rust
@@ -529,8 +528,8 @@ pub fn build_order_clean(raw_email: String, raw_amount: i64) -> Result<Order, Or
 
 Both versions keep two parallel tracks.
 The happy track carries values forward.
-The error track short-circuits without exceptions.
-No `try` and `catch` can silently mix a 400 typo with a 500 outage, because every error is a value with a type.
+The error track short-circuits without unwinding.
+The error type tells the handler exactly which status to return, so a 400 typo can never masquerade as a 500 outage.
 
 ---
 
@@ -1060,23 +1059,23 @@ The core stays fast and deterministic because effects live only in the shell.
 
 ---
 
-## 10. Comparison Matrix: TypeScript Defensive Checks vs. Rust Functional and Type Guarantees
+## 10. Pattern Reference: Defensive Rust vs. Type-Driven Rust
 
-| Concept | TypeScript (Zod and Runtime) | Rust (Type-Driven and Functional) | Architectural Benefit |
+| Concept | Defensive Rust | Type-Driven Rust | Architectural Benefit |
 |---|---|---|---|
-| Boundary parsing | `z.string().email().parse(raw)` returns a branded type at runtime on every call | `Email::parse(String)` returns `Result<Email, EmailError>` once, then moves the proof in the type | Single source of truth for the invariant, zero repeated checks in the core |
-| Newtypes | Branded types via intersection and `as` casts, erasable and forgeable with a cast | `pub struct Email(String)` with private field, unforgeable outside `mod` | Physical impossibility of invalid construction, enforced by the compiler |
-| Totality | `number` includes `NaN`, functions throw or return `undefined` on edge inputs | `Cents(u64)` plus `Result` forces explicit handling of zero and negative | Edge cases become compile-time obligations instead of production incidents |
-| Composition | Chained `if` checks or Zod `.refine` with exception control flow | `and_then`, `map`, `map_err`, and `?` on the `Result` railway | Linear happy path with a typed error track, no exception mixing of 400 and 500 |
-| Domain errors | Union of strings or Zod issues, easy to swallow or misclassify | `thiserror` exhaustive enum, `match` must cover every variant | Callers cannot ignore a new business case, refactors break loudly at build time |
-| App edge errors | `try` and `catch` with `any` error payloads | `anyhow` with `.context()` only in `main` and binaries | Rich operational context where humans read logs, precise types where code branches |
-| Workflow state | Boolean flags like `isPaid` checked with `if` before each action | Type-state `Order<Draft>` to `Order<Paid>` with move semantics | Illegal transitions do not compile, stale handles are destroyed by ownership |
-| Hot-path cost | Repeated runtime validation and object allocation per layer | Borrowed `EmailRef<'a>` with zero heap allocation, promote to owned once | Proof without performance tax, ideal for routers and parsers |
-| Testing | Example-based Jest cases with hand-picked strings | `proptest` with thousands of Unicode and adversarial inputs plus shrinking | Mathematical confidence in parsers, minimal reproducers on failure |
-| Architecture | Controllers mix Zod parsing, DB calls, and business rules with `async` everywhere | Pure sync core with `calculate_refund` plus thin async Axum and Serde shell | Core is trivially testable and portable, effects are isolated and auditable |
+| Boundary parsing | `if` guards repeated in every function over raw `String` | `Email::parse(String)` returns `Result<Email, EmailError>` once, then moves the proof in the type | Single source of truth for the invariant, zero repeated checks in the core |
+| Newtypes | Plain `String` aliases, forgeable anywhere | `pub struct Email(String)` with private field, unforgeable outside `mod` | Physical impossibility of invalid construction, enforced by the compiler |
+| Totality | `u64` division and indexing that panic on edge inputs | `Cents(u64)` plus `Result` forces explicit handling of zero and negative | Edge cases become compile-time obligations instead of production incidents |
+| Composition | Nested `if` pyramids with early `return Err` at every level | `and_then`, `map`, `map_err`, and `?` on the `Result` railway | Linear happy path with a typed error track, errors classified by type |
+| Domain errors | `Result<T, String>` messages, easy to swallow or misclassify | `thiserror` exhaustive enum, `match` must cover every variant | Callers cannot ignore a new business case, refactors break loudly at build time |
+| App edge errors | One catch-all error type from domain to `main` | `anyhow` with `.context()` only in `main` and binaries | Rich operational context where humans read logs, precise types where code branches |
+| Workflow state | Boolean flags like `is_paid` checked with `if` before each action | Type-state `Order<Draft>` to `Order<Paid>` with move semantics | Illegal transitions do not compile, stale handles are destroyed by ownership |
+| Hot-path cost | Cloned `String` newtypes allocated on every layer | Borrowed `EmailRef<'a>` with zero heap allocation, promote to owned once | Proof without performance tax, ideal for routers and parsers |
+| Testing | Hand-picked `#[test]` cases with a few literal strings | `proptest` with thousands of Unicode and adversarial inputs plus shrinking | Mathematical confidence in parsers, minimal reproducers on failure |
+| Architecture | Handlers mix Serde parsing, DB calls, and business rules with `async` everywhere | Pure sync core with `calculate_refund` plus thin async Axum and Serde shell | Core is trivially testable and portable, effects are isolated and auditable |
 
-If you want the TypeScript version of this table, read the companion post [Stop Validating Everywhere in TypeScript]({{< relref "/post/typescript-error-handling-architecture" >}}).
-If you want the dynamic language tradeoff, read [Stop Validating Everywhere in Python]({{< relref "/post/python-error-handling-architecture" >}}).
+Keep this table as a review checklist.
+If a row drifts left, push the proof back into the type.
 
 ---
 

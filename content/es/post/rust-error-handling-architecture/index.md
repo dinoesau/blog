@@ -42,16 +42,15 @@ Usa `thiserror` para errores de dominio exhaustivos en bibliotecas y `anyhow` co
 * **Lleva las invariantes al compilador.**
 Usa el patrón type-state, newtypes prestados de costo cero y un núcleo funcional puro envuelto por un shell delgado con Axum y Serde.
 * Este post es el capítulo Rust de la serie Error Handling.
-Si vienes de TypeScript, empieza con [Deja de Validar en Todas Partes en TypeScript]({{< relref "/post/typescript-error-handling-architecture" >}}).
-Si vienes de Python, compara con [Deja de Validar en Todas Partes en Python]({{< relref "/post/python-error-handling-architecture" >}}).
+Asume solo Rust y construye cada patrón con `Result`, módulos, traits y ownership.
 
 ---
 
 ## 1. Introducción: El Antipatrón del Rust Defensivo
 
-Si vienes de TypeScript o Python, traes un hábito de supervivencia contigo.
-Verificas cada entrada en cada función porque el sistema de tipos borró la prueba dos llamadas atrás.
-En Rust, copiar ese hábito es costoso e innecesario.
+El hábito tentador es verificar cada entrada en cada función.
+Validas el mismo `String` en el handler, luego en el servicio, luego en el repositorio, porque ninguna firma registra qué ya está probado.
+En Rust, ese hábito es costoso e innecesario.
 El compilador no es un verificador de sintaxis.
 Es un motor de pruebas de teoremas en tiempo de compilación, y las cadenas defensivas de `if` lo desperdician.
 
@@ -402,7 +401,7 @@ Eso es encapsulamiento sin costo de runtime.
 ## 4. Pilar 2: Fundamentos Funcionales (Tipos Algebraicos y Funciones Totales)
 
 Paul Chiusano y Runar Bjarnason enseñan esto en *Functional Programming in Scala*, conocido como el Red Book.
-Modela con tipos precisos, escribe funciones totales y compone con combinadores en lugar de ramificar con excepciones.
+Modela con tipos precisos, escribe funciones totales y compone con combinadores en lugar de usar panics para el control de flujo.
 Los enums y structs de Rust son tipos algebraicos de datos, y `Result` es tu mónada `Either`.
 
 Los sum types enumeran alternativas exclusivas.
@@ -440,12 +439,12 @@ pub struct Order {
 }
 ```
 
-No hay null, no hay undefined y no hay campo de método como string sin estructura.
+No hay null, no hay valor ausente implícito y no hay campo de método como string sin estructura.
 Un `match` sobre `PaymentMethod` debe manejar cada brazo o la compilación falla.
 Esa exhaustividad es una prueba sobre tus ramas de negocio.
 
 Una función total está definida para el 100 por ciento de sus valores de entrada.
-Nunca entra en pánico, nunca bloquea con entradas ocultas y nunca lanza a través de la pila.
+Nunca hace panic, nunca bloquea con entradas ocultas y nunca usa el panic como control de flujo.
 Una función parcial finge ser total pero explota con algunas entradas.
 
 ```rust
@@ -529,8 +528,8 @@ pub fn build_order_clean(raw_email: String, raw_amount: i64) -> Result<Order, Or
 
 Ambas versiones mantienen dos vías paralelas.
 La vía feliz lleva valores hacia adelante.
-La vía de error cortocircuita sin excepciones.
-Ningún `try` y `catch` puede mezclar silenciosamente un typo 400 con una caída 500, porque cada error es un valor con un tipo.
+La vía de error cortocircuita sin panics.
+El tipo de error le dice al handler exactamente qué estado devolver, así un typo 400 nunca puede disfrazarse de caída 500.
 
 ---
 
@@ -1060,23 +1059,23 @@ El núcleo queda rápido y determinista porque los efectos viven solo en el shel
 
 ---
 
-## 10. Matriz Comparativa: Chequeos Defensivos en TypeScript vs. Garantías Funcionales y de Tipos en Rust
+## 10. Referencia de Patrones: Rust Defensivo vs. Rust Guiado por Tipos
 
-| Concepto | TypeScript (Zod y Runtime) | Rust (Type-Driven y Funcional) | Beneficio Arquitectónico |
+| Concepto | Rust Defensivo | Rust Guiado por Tipos | Beneficio Arquitectónico |
 |---|---|---|---|
-| Parsing de frontera | `z.string().email().parse(raw)` devuelve un tipo branded en runtime en cada llamada | `Email::parse(String)` devuelve `Result<Email, EmailError>` una vez, luego mueve la prueba en el tipo | Una sola fuente de verdad para la invariante, cero chequeos repetidos en el núcleo |
-| Newtypes | Branded types con intersección y casts `as`, borrables y forjables con un cast | `pub struct Email(String)` con campo privado, inforjable fuera de `mod` | Imposibilidad física de construcción inválida, impuesta por el compilador |
-| Totalidad | `number` incluye `NaN`, las funciones lanzan o devuelven `undefined` en entradas borde | `Cents(u64)` más `Result` fuerza manejo explícito de cero y negativos | Los casos borde se vuelven obligaciones de compilación en lugar de incidentes |
-| Composición | Cadenas de `if` o `.refine` de Zod con control por excepciones | `and_then`, `map`, `map_err` y `?` sobre la vía `Result` | Ruta feliz lineal con vía de error tipada, sin mezclar 400 y 500 |
-| Errores de dominio | Unión de strings o issues de Zod, fáciles de tragar o clasificar mal | Enum exhaustivo con `thiserror`, `match` debe cubrir cada variante | Los llamadores no pueden ignorar un caso nuevo, los refactors rompen en build |
-| Errores de borde | `try` y `catch` con payloads `any` | `anyhow` con `.context()` solo en `main` y binarios | Contexto operativo rico donde los humanos leen logs, tipos precisos donde el código ramifica |
-| Estado de flujo | Banderas como `isPaid` verificadas con `if` antes de cada acción | Type-state `Order<Draft>` a `Order<Paid>` con semántica de move | Las transiciones ilegales no compilan, los handles obsoletos se destruyen por ownership |
-| Costo en hot path | Validación repetida y asignación por capa | `EmailRef<'a>` prestado sin heap, promoción a propio una vez | Prueba sin impuesto de rendimiento, ideal para routers y parsers |
-| Testing | Casos Jest basados en ejemplos con strings manuales | `proptest` con miles de entradas Unicode y adversariales más shrinking | Confianza matemática en parsers, reproductores mínimos al fallar |
-| Arquitectura | Controladores mezclan parsing Zod, DB y reglas con `async` en todas partes | Núcleo sync puro con `calculate_refund` más shell delgado Axum y Serde | Núcleo trivialmente testeable y portable, efectos aislados y auditables |
+| Parsing de frontera | Guardias `if` repetidos en cada función sobre `String` crudo | `Email::parse(String)` devuelve `Result<Email, EmailError>` una vez, luego mueve la prueba en el tipo | Una sola fuente de verdad para la invariante, cero chequeos repetidos en el núcleo |
+| Newtypes | Alias de `String` planos, forjables en cualquier parte | `pub struct Email(String)` con campo privado, inforjable fuera de `mod` | Imposibilidad física de construcción inválida, impuesta por el compilador |
+| Totalidad | División e indexación sobre `u64` que hacen panic en entradas borde | `Cents(u64)` más `Result` fuerza manejo explícito de cero y negativos | Los casos borde se vuelven obligaciones de compilación en lugar de incidentes |
+| Composición | Pirámides de `if` anidados con `return Err` temprano en cada nivel | `and_then`, `map`, `map_err` y `?` sobre la vía `Result` | Ruta feliz lineal con vía de error tipada, errores clasificados por tipo |
+| Errores de dominio | Mensajes `Result<T, String>`, fáciles de tragar o clasificar mal | Enum exhaustivo con `thiserror`, `match` debe cubrir cada variante | Los llamadores no pueden ignorar un caso nuevo, los refactors rompen en build |
+| Errores de borde | Un solo tipo de error genérico desde el dominio hasta `main` | `anyhow` con `.context()` solo en `main` y binarios | Contexto operativo rico donde los humanos leen logs, tipos precisos donde el código ramifica |
+| Estado de flujo | Banderas como `is_paid` verificadas con `if` antes de cada acción | Type-state `Order<Draft>` a `Order<Paid>` con semántica de move | Las transiciones ilegales no compilan, los handles obsoletos se destruyen por ownership |
+| Costo en hot path | Newtypes `String` clonados y asignados en cada capa | `EmailRef<'a>` prestado sin heap, promoción a propio una vez | Prueba sin impuesto de rendimiento, ideal para routers y parsers |
+| Testing | Casos `#[test]` manuales con unos pocos strings literales | `proptest` con miles de entradas Unicode y adversariales más shrinking | Confianza matemática en parsers, reproductores mínimos al fallar |
+| Arquitectura | Handlers que mezclan parsing Serde, DB y reglas con `async` en todas partes | Núcleo sync puro con `calculate_refund` más shell delgado Axum y Serde | Núcleo trivialmente testeable y portable, efectos aislados y auditables |
 
-Si quieres la versión TypeScript de esta tabla, lee el post compañero [Deja de Validar en Todas Partes en TypeScript]({{< relref "/post/typescript-error-handling-architecture" >}}).
-Si quieres el tradeoff de lenguajes dinámicos, lee [Deja de Validar en Todas Partes en Python]({{< relref "/post/python-error-handling-architecture" >}}).
+Guarda esta tabla como checklist de revisión.
+Si una fila se desliza a la izquierda, devuelve la prueba al tipo.
 
 ---
 
