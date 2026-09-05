@@ -3,6 +3,7 @@
 - Software Architecture
 - TypeScript
 - Python
+- Rust
 - Development Patterns
 - AI Engineering
 - Machine Learning
