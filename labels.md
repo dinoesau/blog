@@ -39,3 +39,5 @@
 - Stacked PRs
 - GitHub CLI
 - Worktrunk
+- Rust
+- DDD
