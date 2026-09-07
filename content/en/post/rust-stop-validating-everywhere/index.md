@@ -3,6 +3,9 @@ title: "Stop Validating Everywhere: An Architectural Guide to Error Handling, In
 description: "Move validation from runtime to compile time in Rust with parse don't validate, newtypes, smart constructors, total functions, type-state, thiserror versus anyhow, and functional core imperative shell with Axum."
 date: 2026-09-05
 image: cover.png
+slug: rust-stop-validating-everywhere
+aliases:
+    - /p/stop-validating-everywhere-an-architectural-guide-to-error-handling-invariants-and-functional-domain-modeling-in-rust/
 categories:
     - Software Architecture
     - Rust
