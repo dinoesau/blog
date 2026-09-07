@@ -3,6 +3,9 @@ title: "Deja de Validar en Todas Partes: Una Guía Arquitectónica para el Manej
 description: "Traslada la validación del runtime al tiempo de compilación en Rust con parse don't validate, newtypes, smart constructors, funciones totales, type-state, thiserror frente a anyhow y núcleo funcional con shell Axum."
 date: 2026-09-05
 image: cover.png
+slug: rust-stop-validating-everywhere
+aliases:
+    - /p/deja-de-validar-en-todas-partes-una-guía-arquitectónica-para-el-manejo-de-errores-invariantes-y-modelado-funcional-de-dominio-en-rust/
 categories:
     - Software Architecture
     - Rust

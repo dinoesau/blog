@@ -29,11 +29,17 @@ Keep front matter (date, categories, tags) identical across the two versions.
 Use the `relref` shortcode, never relative paths:
 
 ```markdown
-[Stop Validating Everywhere]({{< relref "/post/typescript-error-handling-architecture" >}})
+[Stop Validating Everywhere]({{< relref "/post/typescript-stop-validating-everywhere" >}})
 ```
 
 Relative paths like `../foo/` resolve against the rendered permalink (`/p/:slug/`) and 404.
 `relref` paths are relative to the language content root and resolve to the same-language page.
+
+## Slugs and URLs
+
+Hugo derives the URL slug from the `slug` front matter field, falling back to the urlized post title.
+Renaming the content directory alone does NOT change the URL; set `slug:` explicitly, with the same value in both languages.
+When changing a slug, keep the previous URL in `aliases:` so old links redirect (omit the `/es` prefix in the Spanish file; Hugo adds it).
 
 ## Post front matter extras
 

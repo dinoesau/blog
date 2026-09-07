@@ -250,5 +250,5 @@ La meta nunca fue generar código más correcto. La meta es generar código que 
 [^13]: [Maintaining AI-Generated Code Consistency with Team Style Guides](https://www.onspace.ai/blog/ai-code-consistency-style-guides), 2025.
 [^14]: [The AI Code Generation Consistency Matrix](https://nosemicolons.com/posts/ai-code-generation-consistency-matrix/), 2026.
 [^15]: [dinoesau/skills](https://github.com/dinoesau/skills/tree/main/skills) es un repositorio de skills reutilizables, incluyendo error-handling, coding-guide y to-plan.
-[^16]: [Deja de Validar en Todas Partes: Una Guía Arquitectónica para el Manejo de Errores en TypeScript]({{< relref "/post/typescript-error-handling-architecture" >}})
-[^17]: [Deja de Validar en Todas Partes: Una Guía Arquitectónica para el Manejo de Errores en Python]({{< relref "/post/python-error-handling-architecture" >}})
+[^16]: [Deja de Validar en Todas Partes: Una Guía Arquitectónica para el Manejo de Errores en TypeScript]({{< relref "/post/typescript-stop-validating-everywhere" >}})
+[^17]: [Deja de Validar en Todas Partes: Una Guía Arquitectónica para el Manejo de Errores en Python]({{< relref "/post/python-stop-validating-everywhere" >}})
