@@ -531,7 +531,6 @@ pub fn process_refund_typed(order: &Order, amount: Cents) -> Result<String, Doma
     })
 }
 ```
-```
 
 You still need `as_str` or `Display` accessors, and that is intentional.
 Callers can read the value but cannot forge it.
