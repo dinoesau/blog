@@ -44,8 +44,16 @@ Make illegal states unrepresentable by construction.
 Use an exhaustive discriminated union for domain errors and wrap infrastructure failures with `cause` only at the application edge.
 * **Push invariants into the compiler.**
 Use the type-state pattern, zero-runtime brands, and a pure functional core wrapped by a thin Hono or Fastify and Zod shell.
+```json
+// package.json sketch with pinned versions.
+{
+  "dependencies": { "hono": "^4", "zod": "^3", "ts-pattern": "^5" },
+  "devDependencies": { "fast-check": "^3", "vitest": "^2", "typescript": "^5" }
+}
+```
+
 * This post is the TypeScript chapter of the Error Handling series.
-It assumes only TypeScript 5.x in `strict` mode and builds every pattern from unions, modules, and `Result`.
+It assumes TypeScript 5.x in `strict` mode plus `noUncheckedIndexedAccess`, and uses Zod, ts-pattern, fast-check, and Hono or Fastify for examples. It builds every pattern from unions, modules, and `Result`.
 
 ---
 
@@ -72,7 +80,7 @@ declare const gateway: { refund: (stripeId: string, amount: number) => Promise<v
 
 export async function processRefund(req: Request, res: Response): Promise<void> {
   try {
-    const body: unknown = await req.body;
+    const body: unknown = req.body;
 
     // Defensive check 1: who validated the payload shape?
     if (typeof body !== "object" || body === null) {
@@ -178,10 +186,12 @@ It transforms and certifies in one move.
 
 ```ts
 // Parsing: consumes unknown, produces proof-bearing Email.
-declare const EmailBrand: unique symbol;
-export type Email = string & { readonly [EmailBrand]: "Email" };
+// Single brand system used everywhere: Brand<string, Name>.
+import type { Brand } from "./brand.js";
+export type Email = Brand<string, "Email">;
 
 export type EmailError =
+  | { readonly kind: "NotAString" }
   | { readonly kind: "MissingAt" }
   | { readonly kind: "EmptyLocalPart" }
   | { readonly kind: "InvalidDomain" };
@@ -192,19 +202,27 @@ export type Result<T, E> =
 
 export function parseEmail(raw: unknown): Result<Email, EmailError> {
   if (typeof raw !== "string") {
-    return { ok: false, error: { kind: "MissingAt" } };
+    return { ok: false, error: { kind: "NotAString" } };
+  }
+  if (raw.length > 254) {
+    return { ok: false, error: { kind: "InvalidDomain" } };
   }
   const trimmed = raw.trim();
-  const at = trimmed.indexOf("@");
-  if (at < 0) {
+  // Strict matrix: exactly one @, no whitespace, dot not at edges, no double dot.
+  // Rejects a@b@c.com, a@@b.com, a b@c.com, a@b..com, a@b.
+  if (trimmed.split("@").length !== 2) {
     return { ok: false, error: { kind: "MissingAt" } };
   }
+  if (/\s/.test(trimmed)) {
+    return { ok: false, error: { kind: "InvalidDomain" } };
+  }
+  const at = trimmed.indexOf("@");
   const local = trimmed.slice(0, at);
   const domain = trimmed.slice(at + 1);
   if (local === "") {
     return { ok: false, error: { kind: "EmptyLocalPart" } };
   }
-  if (!domain.includes(".")) {
+  if (!domain.includes(".") || domain.includes("..") || domain.startsWith(".") || domain.endsWith(".")) {
     return { ok: false, error: { kind: "InvalidDomain" } };
   }
   // The single sanctioned cast in the codebase.
@@ -265,12 +283,14 @@ export type Brand<T, Name extends string> = T & { readonly __brand: Name };
 
 export type Email = Brand<string, "Email">;
 export type UserId = Brand<string, "UserId">;
+export type OrderId = Brand<string, "OrderId">;
 export type Cents = Brand<number, "Cents">;
 ```
 
 Each brand is a distinct string literal, so `Email` is not assignable to `UserId` even though both wrap `string`.
 A bare `string` is not assignable to either.
 That is the whole trick.
+This `Brand` helper replaces the introductory `unique symbol` sketch from the previous section with a single reusable pattern.
 
 Now put each smart constructor in its own module and export only the type and the parser, never a raw factory.
 
@@ -291,15 +311,25 @@ export function parseEmail(raw: unknown): Result<Email, EmailError> {
   if (typeof raw !== "string") {
     return { ok: false, error: { kind: "NotAString" } };
   }
+  if (raw.length > 254) {
+    return { ok: false, error: { kind: "InvalidDomain" } };
+  }
   const trimmed = raw.trim();
-  const at = trimmed.indexOf("@");
-  if (at < 0) {
+  // Strict matrix: exactly one @, no whitespace, dot not at edges, no double dot.
+  // Rejects a@b@c.com, a@@b.com, a b@c.com, a@b..com, a@b.
+  if (trimmed.split("@").length !== 2) {
     return { ok: false, error: { kind: "MissingAt" } };
   }
-  if (trimmed.slice(0, at) === "") {
+  if (/\s/.test(trimmed)) {
+    return { ok: false, error: { kind: "InvalidDomain" } };
+  }
+  const at = trimmed.indexOf("@");
+  const local = trimmed.slice(0, at);
+  const domain = trimmed.slice(at + 1);
+  if (local === "") {
     return { ok: false, error: { kind: "EmptyLocalPart" } };
   }
-  if (!trimmed.slice(at + 1).includes(".")) {
+  if (!domain.includes(".") || domain.includes("..") || domain.startsWith(".") || domain.endsWith(".")) {
     return { ok: false, error: { kind: "InvalidDomain" } };
   }
   return { ok: true, value: trimmed as Email };
@@ -318,17 +348,30 @@ import type { Result } from "./result.js";
 
 export type { Cents } from "./brand.js";
 
-export type MoneyError = { readonly kind: "NonPositive"; readonly received: number };
+export type MoneyError =
+  | { readonly kind: "NotANumber"; readonly received: unknown }
+  | { readonly kind: "NotAnInteger"; readonly received: unknown }
+  | { readonly kind: "NonPositive"; readonly received: unknown };
 
 export function parseCents(raw: unknown): Result<Cents, MoneyError> {
   if (typeof raw !== "number" || !Number.isFinite(raw)) {
-    return { ok: false, error: { kind: "NonPositive", received: NaN } };
+    return { ok: false, error: { kind: "NotANumber", received: raw } };
   }
-  if (!Number.isInteger(raw) || raw <= 0) {
+  if (!Number.isInteger(raw)) {
+    return { ok: false, error: { kind: "NotAnInteger", received: raw } };
+  }
+  if (raw <= 0) {
     return { ok: false, error: { kind: "NonPositive", received: raw } };
   }
   return { ok: true, value: raw as Cents };
 }
+
+function mintCentsUnchecked(value: number): Cents {
+  // Module-private. Only refundShareTotal in this same money.ts calls it after checks.
+  return value as Cents;
+}
+
+// No test export: fixtures use parseCents, never the private mint.
 
 export function centsToNumber(amount: Cents): number {
   return amount;
@@ -339,13 +382,13 @@ For class-shaped aggregates, use a private constructor plus a `#private` field o
 
 ```ts
 // domain/order.ts - DDD aggregate with a guarded boundary.
-import type { Cents, Email, UserId } from "./brand.js";
+import type { Cents, Email, OrderId, UserId } from "./brand.js";
 import type { PaymentMethod } from "./payment.js";
 
 const OrderTag: unique symbol = Symbol("OrderTag");
 
 export interface Order {
-  readonly id: string;
+  readonly id: OrderId;
   readonly userId: UserId;
   readonly email: Email;
   readonly amount: Cents;
@@ -354,7 +397,7 @@ export interface Order {
 }
 
 export function createOrder(input: {
-  readonly id: string;
+  readonly id: OrderId;
   readonly userId: UserId;
   readonly email: Email;
   readonly amount: Cents;
@@ -370,16 +413,59 @@ Zod and Effect Schema fit naturally as the parser implementation inside the smar
 They are the bouncer, not the domain.
 
 ```ts
+// domain/user-id.ts - the only module allowed to mint UserId.
+import type { UserId } from "./brand.js";
+import type { Result } from "./result.js";
+
+export type UserIdError = { readonly kind: "InvalidUserId" };
+
+export function parseUserId(raw: unknown): Result<UserId, UserIdError> {
+  if (typeof raw !== "string") {
+    return { ok: false, error: { kind: "InvalidUserId" } };
+  }
+  if (raw.length > 64) {
+    return { ok: false, error: { kind: "InvalidUserId" } };
+  }
+  const trimmed = raw.trim();
+  // Single owner of the uuid rule. Returns trimmed so "  uuid  " never leaks spaces.
+  const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (trimmed === "" || !uuidRe.test(trimmed)) {
+    return { ok: false, error: { kind: "InvalidUserId" } };
+  }
+  return { ok: true, value: trimmed as UserId };
+}
+
+// domain/order-id.ts - the only module allowed to mint OrderId.
+import type { OrderId } from "./brand.js";
+
+export type OrderIdError = { readonly kind: "InvalidOrderId" };
+
+export function parseOrderId(raw: unknown): Result<OrderId, OrderIdError> {
+  if (typeof raw !== "string") {
+    return { ok: false, error: { kind: "InvalidOrderId" } };
+  }
+  if (raw.length > 64) {
+    return { ok: false, error: { kind: "InvalidOrderId" } };
+  }
+  const trimmed = raw.trim();
+  if (trimmed === "") {
+    return { ok: false, error: { kind: "InvalidOrderId" } };
+  }
+  return { ok: true, value: trimmed as OrderId };
+}
+
 // domain/refund-request.ts - schema-as-parser, brand-as-proof.
 import { z } from "zod";
 import { parseCents } from "./money.js";
 import { parseEmail } from "./email.js";
+import { parseUserId } from "./user-id.js";
 import type { Cents, Email, UserId } from "./brand.js";
 import type { Result } from "./result.js";
 
 const RefundSchema = z.object({
-  userId: z.string().uuid(),
-  email: z.string(),
+  // Shape only with caps to bound regex/trim work. UUID format lives in parseUserId.
+  userId: z.string().max(64),
+  email: z.string().max(254),
   amount: z.number(),
 });
 
@@ -392,6 +478,7 @@ export interface RefundRequest {
 export type RefundRequestError =
   | { readonly kind: "BadShape"; readonly issues: string }
   | { readonly kind: "BadEmail"; readonly error: ReturnType<typeof parseEmail> extends { ok: false; error: infer E } ? E : never }
+  | { readonly kind: "BadUserId" }
   | { readonly kind: "BadAmount" };
 
 export function parseRefundRequest(data: unknown): Result<RefundRequest, RefundRequestError> {
@@ -403,6 +490,10 @@ export function parseRefundRequest(data: unknown): Result<RefundRequest, RefundR
   if (!email.ok) {
     return { ok: false, error: { kind: "BadEmail", error: email.error } };
   }
+  const userId = parseUserId(shaped.data.userId);
+  if (!userId.ok) {
+    return { ok: false, error: { kind: "BadUserId" } };
+  }
   const amount = parseCents(shaped.data.amount);
   if (!amount.ok) {
     return { ok: false, error: { kind: "BadAmount" } };
@@ -410,7 +501,7 @@ export function parseRefundRequest(data: unknown): Result<RefundRequest, RefundR
   return {
     ok: true,
     value: {
-      userId: shaped.data.userId as UserId,
+      userId: userId.value,
       email: email.value,
       amount: amount.value,
     },
@@ -420,9 +511,10 @@ export function parseRefundRequest(data: unknown): Result<RefundRequest, RefundR
 
 Be honest about the limit.
 In Rust, `pub struct Email(String)` with a private field is physically unforgeable outside the module.
-In TypeScript, the brand is erased at runtime and any module can write `raw as Email`.
+In TypeScript, the brand is erased at runtime and any module can write `raw as Email`, including `{} as StagedOrder<Paid>`.
+A non-exported key only hides the easy literal path, it does not create opacity.
 Unforgeability here is disciplinary, not physical.
-Sustain it with three rules: keep the `as` cast inside the smart constructor module only, forbid `as` elsewhere with an ESLint rule such as `@typescript-eslint/consistent-type-assertions`, and re-export the opaque type without re-exporting the brand key.
+Sustain it with three rules: keep the `as` cast inside the smart constructor module only, forbid `as` elsewhere with an ESLint `no-restricted-syntax` rule targeting `TSAsExpression` with an allowlist for `domain/*`, and re-export the opaque type without re-exporting the brand key.
 Review every new `as` like a `sudo` invocation.
 
 ---
@@ -459,6 +551,7 @@ export interface OrderShape {
 ```
 
 There is no `null`, no stringly typed `method: string`, and no half-built object.
+Naming: `Order` in pillar 1 is the tagged aggregate, `OrderShape` here is its untagged product view for composition demos, and `OrderSnapshot` in the core is the persisted read view. All three share `OrderId`, `UserId`, `Email`, and `Cents`.
 Exhaustiveness is enforced with a `never`-taking helper.
 
 ```ts
@@ -489,16 +582,18 @@ It never throws for expected cases, never returns `undefined` by surprise, and n
 A partial function pretends to be total but explodes on some inputs.
 
 ```ts
-// ❌ Partial: throws on zero and on NaN, returns a bare number.
+// ❌ Partial: never throws, returns Infinity on zero and NaN silently, returns a bare number.
 export function refundSharePartial(amount: number, parts: number): number {
   return amount / parts;
 }
 
-// ✅ Total: every input maps to an explicit outcome.
+// ✅ Total: lives in domain/money.ts so mintCentsUnchecked stays in the defining module.
 import type { Cents } from "./brand.js";
 import type { Result } from "./result.js";
 
-export type SplitError = { readonly kind: "EmptyParts" } | { readonly kind: "NotDivisible" };
+export type SplitError =
+  | { readonly kind: "EmptyParts" }
+  | { readonly kind: "NotDivisible"; readonly amount: number; readonly parts: number };
 
 export function refundShareTotal(amount: Cents, parts: number): Result<Cents, SplitError> {
   if (!Number.isInteger(parts) || parts <= 0) {
@@ -506,13 +601,13 @@ export function refundShareTotal(amount: Cents, parts: number): Result<Cents, Sp
   }
   const share = amount / parts;
   if (!Number.isInteger(share)) {
-    return { ok: false, error: { kind: "NotDivisible" } };
+    return { ok: false, error: { kind: "NotDivisible", amount, parts } };
   }
-  return { ok: true, value: share as Cents };
+  return { ok: true, value: mintCentsUnchecked(share) };
 }
 ```
 
-Note the `strict` plus `noUncheckedIndexedAccess` discipline: indexing, division, and JSON access are partial operations, so each one must return `Result` or narrow before use.
+Note the `strict` plus `noUncheckedIndexedAccess` discipline: indexing returns `T | undefined` and must be narrowed before use. Division and `any` JSON access are not compiler-checked in TypeScript, so return `Result` for them by discipline, not because the compiler forces it.
 Total signatures force callers to confront edge cases at the call site.
 
 Composition uses `map`, `andThen`, and `mapErr` instead of nested `if` pyramids.
@@ -560,47 +655,67 @@ export function mapErr<T, E, F>(result: Result<T, E>, fn: (error: E) => F): Resu
 
 ```ts
 // domain/build-order.ts - chaining on the railway.
-import { andThen, map, ok } from "./result.js";
+import { andThen, map, mapErr, ok } from "./result.js";
 import type { Result } from "./result.js";
 import { parseEmail } from "./email.js";
 import { parseCents } from "./money.js";
+import { parseUserId } from "./user-id.js";
 import type { OrderShape } from "./order-shape.js";
 
-export function buildOrderChained(rawEmail: unknown, rawAmount: unknown): Result<OrderShape, string> {
-  return andThen(parseEmail(rawEmail), (email) =>
-    map(
-      andThen(parseCents(rawAmount), (amount) =>
-        ok({ email, amount } as const),
+export type BuildOrderError =
+  | { readonly kind: "BadEmail"; readonly error: string }
+  | { readonly kind: "BadAmount" }
+  | { readonly kind: "BadUserId" };
+
+export function buildOrderChained(
+  rawEmail: unknown,
+  rawAmount: unknown,
+): Result<OrderShape, BuildOrderError> {
+  // Each parse error is mapped to BuildOrderError, so the chain compiles.
+  return andThen(
+    mapErr(parseEmail(rawEmail), (e): BuildOrderError => ({ kind: "BadEmail", error: e.kind })),
+    (email) =>
+      andThen(
+        mapErr(parseCents(rawAmount), (): BuildOrderError => ({ kind: "BadAmount" })),
+        (amount) =>
+          map(
+            mapErr(
+              parseUserId("00000000-0000-4000-8000-000000000000"),
+              (): BuildOrderError => ({ kind: "BadUserId" }),
+            ),
+            (userId) => ({
+              userId,
+              email,
+              amount,
+              method: { kind: "cash" } as const,
+            }),
+          ),
       ),
-      ({ email: e, amount: a }) => ({
-        // Placeholder userId and method for brevity; parse them the same way.
-        userId: "00000000-0000-4000-8000-000000000000" as OrderShape["userId"],
-        email: e,
-        amount: a,
-        method: { kind: "cash" } as const,
-      }),
-    ),
   );
 }
 ```
 
 Combinators are precise but noisy for long chains, so TypeScript uses the manual `?` via early return.
-It is the same monadic bind with identical semantics.
+It has the same short-circuit control flow, with different error-type ergonomics: `andThen` preserves the union automatically, early return requires you to map errors by hand.
 
 ```ts
-export function buildOrderClean(rawEmail: unknown, rawAmount: unknown): Result<OrderShape, string> {
+export function buildOrderClean(rawEmail: unknown, rawAmount: unknown): Result<OrderShape, BuildOrderError> {
   const email = parseEmail(rawEmail);
   if (!email.ok) {
-    return { ok: false, error: `bad email: ${email.error.kind}` };
+    return { ok: false, error: { kind: "BadEmail", error: email.error.kind } };
   }
   const amount = parseCents(rawAmount);
   if (!amount.ok) {
-    return { ok: false, error: "bad amount" };
+    return { ok: false, error: { kind: "BadAmount" } };
+  }
+  const userId = parseUserId("00000000-0000-4000-8000-000000000000");
+  if (!userId.ok) {
+    return { ok: false, error: { kind: "BadUserId" } };
   }
   return {
     ok: true,
     value: {
-      userId: "00000000-0000-4000-8000-000000000000" as OrderShape["userId"],
+      userId: userId.value,
       email: email.value,
       amount: amount.value,
       method: { kind: "cash" },
@@ -619,8 +734,8 @@ The error type tells the handler exactly which status to return, so a 400 typo c
 ## 5. Pillar 3: The Lisp Connection, Metaprogramming and Expression-Oriented Design
 
 Abelson and Sussman celebrate in *Structure and Interpretation of Computer Programs* a style where programs are built from expressions that evaluate to values, and where code itself is data that programs can manipulate.
-TypeScript inherits that soul through its ML lineage: ternaries, `switch` expressions via helpers, and `ts-pattern` `match` all return values you assign directly.
-Schemas are the second half: a Zod or Effect Schema is an abstract syntax tree describing your domain that you can inspect, compose, and generate code from.
+TypeScript is expression-oriented through ternaries, helper-based exhaustive matching such as `match` from `ts-pattern`, and values assigned directly.
+TypeScript has no switch expression. Schemas are the second half: a Zod or Effect Schema is a composable descriptor of your domain that you can inspect, extend, and derive types from, not Lisp homoiconicity.
 
 Prefer expressions over statements when building domain values.
 
@@ -645,10 +760,12 @@ export function describeResult(result: Result<Email, { kind: string }>): string 
     .exhaustive();
 }
 
-export function emailOrFallback(raw: unknown): Email | null {
+export function emailOrFallback(raw: unknown, fallback: Email): Email {
   const parsed = parseEmail(raw);
   // No let-mutation dance. The conditional is the value.
-  return parsed.ok ? parsed.value : null;
+  // Returns a proven Email in both branches, never null.
+  // WARNING: fallback swallows the error. Prefer Result<Email, EmailError> when callers must react.
+  return parsed.ok ? parsed.value : fallback;
 }
 ```
 
@@ -688,7 +805,8 @@ type ExtractLocal<S extends string> = S extends `${infer Local}@${string}` ? Loc
 type LocalOfExample = ExtractLocal<"alice@example.com">;
 //   ^? type LocalOfExample = "alice"
 
-// Narrow a parsed DTO with satisfies so excess keys fail without widening.
+// Narrow a parsed DTO with satisfies to keep literal types without widening.
+// satisfies still checks assignability, including excess properties on literals.
 const policy = {
   maxCents: 500_000,
   currency: "USD",
@@ -706,21 +824,25 @@ import { z } from "zod";
 import type { Brand } from "./brand.js";
 import type { Result } from "./result.js";
 
-export function makeStringBrand<Name extends string>(name: Name, schema: z.ZodString) {
+// Generic mint for string brands. Sanctioned only because it lives with the helper
+// and callers still declare the full rule inline. Do not add a second Email parser:
+// canonical Email comes from domain/email.ts parseEmail. This is the same rule via Zod.
+export function makeStringBrand<Name extends string>(name: Name, schema: z.ZodType<string>) {
   return {
-    schema: schema.transform((value) => value as Brand<string, Name>),
+    schema,
     parse(raw: unknown): Result<Brand<string, Name>, { readonly kind: string; readonly name: Name }> {
       const parsed = schema.safeParse(raw);
       if (!parsed.success) {
         return { ok: false, error: { kind: "invalid", name } };
       }
+      // Single sanctioned cast for this generic helper. Prefer per-type parseEmail in real code.
       return { ok: true, value: parsed.data as Brand<string, Name> };
     },
   };
 }
 
-// Usage keeps the rule visible at the call site.
-export const EmailParser = makeStringBrand("Email", z.string().trim().min(3));
+// Same email rule expressed via Zod. Pick one source of truth per codebase.
+export const EmailParser = makeStringBrand("Email", z.string().trim().email());
 ```
 
 The rule for macros, decorators, and helpers is strict: the helper may remove boilerplate around `safeParse`, `trim`, and `transform`, but the invariant itself must stay visible in the domain module.
@@ -749,27 +871,33 @@ Every variant is a business fact the caller must handle.
 ```ts
 // domain/errors.ts - the exhaustive business vocabulary.
 import type { EmailError } from "./email.js";
+import type { Cents, OrderId } from "./brand.js";
 
 export type DomainError =
   | { readonly kind: "InvalidEmail"; readonly error: EmailError }
   | { readonly kind: "InvalidAmount" }
-  | { readonly kind: "UserNotFound"; readonly userId: string }
-  | { readonly kind: "InsufficientFunds"; readonly requested: number; readonly balance: number }
-  | { readonly kind: "AlreadyRefunded"; readonly orderId: string };
+  | { readonly kind: "ExceedsMax"; readonly max: Cents }
+  | { readonly kind: "InvalidOrderId" }
+  | { readonly kind: "UserNotFound"; readonly userId: UserId }
+  | { readonly kind: "InsufficientFunds"; readonly requested: Cents; readonly balance: Cents }
+  | { readonly kind: "AlreadyRefunded"; readonly orderId: OrderId };
 ```
 
 Exhaustive `switch` now forces product decisions, and `assertNever` turns a forgotten case into a compile error.
 
 ```ts
-// shell/http-status.ts - one mapping, checked by the compiler.
+// domain/status.ts - single mapping shared by shell and app, checked by the compiler.
 import { assertNever } from "./assert.js";
-import type { DomainError } from "./domain/errors.js";
+import type { DomainError } from "./errors.js";
 
 export function domainToStatus(error: DomainError): number {
   switch (error.kind) {
     case "InvalidEmail":
     case "InvalidAmount":
+    case "InvalidOrderId":
       return 400;
+    case "ExceedsMax":
+      return 422;
     case "UserNotFound":
       return 404;
     case "InsufficientFunds":
@@ -786,6 +914,10 @@ export function domainToMessage(error: DomainError): string {
       return `invalid email: ${error.error.kind}`;
     case "InvalidAmount":
       return "invalid amount: must be a positive integer";
+    case "InvalidOrderId":
+      return "invalid order id";
+    case "ExceedsMax":
+      return `amount exceeds maximum ${error.max}`;
     case "UserNotFound":
       return "user not found";
     case "InsufficientFunds":
@@ -802,7 +934,8 @@ Wrap infrastructure errors once at the application layer with an explicit `cause
 
 ```ts
 // app/errors.ts - domain facts plus operational failures.
-import type { DomainError } from "./domain/errors.js";
+// App imports status from domain, never from shell. Single table, no duplication.
+import { domainToStatus } from "../domain/status.js";
 
 export type AppError =
   | { readonly kind: "Domain"; readonly error: DomainError }
@@ -826,7 +959,8 @@ Add context and logs only at the edge, where humans read them.
 
 ```ts
 // shell/handler-helpers.ts - edge-only enrichment.
-import type { AppError } from "./app/errors.js";
+import type { AppError } from "../app/errors.js";
+import { domainToMessage, domainToStatus } from "../domain/status.js";
 
 export interface ErrorReport {
   readonly status: number;
@@ -862,7 +996,7 @@ This is Brady-style type-driven design applied to business lifecycles.
 
 ```ts
 // domain/order-lifecycle.ts - workflow encoded in the generic slot.
-import type { Cents } from "./brand.js";
+import type { Cents, OrderId } from "./brand.js";
 
 export interface Draft {
   readonly stage: "draft";
@@ -876,30 +1010,36 @@ export interface Paid {
 
 export type OrderStage = Draft | Submitted | Paid;
 
-declare const StageTag: unique symbol;
+// Lifecycle uses StagedOrder, never the core Order, so the two never collide.
+// Brand<string> itself emits no JS. Symbol() and object spreads below emit one Symbol
+// plus one object per transition. Keep lifecycle construction out of the hot path.
+export const StageTag: unique symbol = Symbol("StageTag");
 
-export interface Order<S extends OrderStage> {
-  readonly id: string;
+export interface StagedOrder<S extends OrderStage> {
+  readonly id: OrderId;
   readonly amount: Cents;
   readonly stage: S["stage"];
+  // With declaration:true this exported interface needs an exported tag, hence export const above.
+  // Export does not allow forging without as, opacity stays disciplinary.
   readonly [StageTag]: S;
 }
 
-export function createDraftOrder(id: string, amount: Cents): Order<Draft> {
+export function createDraftOrder(id: OrderId, amount: Cents): StagedOrder<Draft> {
+  // Same-module mint: StageTag and StagedOrder live in order-lifecycle.ts, so these casts are sanctioned.
   return { id, amount, stage: "draft", [StageTag]: { stage: "draft" } as Draft };
 }
 
-export function submitOrder(order: Order<Draft>): Order<Submitted> {
+export function submitOrder(order: StagedOrder<Draft>): StagedOrder<Submitted> {
   // Conceptually consumes the draft: callers should drop the old binding.
   return { id: order.id, amount: order.amount, stage: "submitted", [StageTag]: { stage: "submitted" } as Submitted };
 }
 
-export function payOrder(order: Order<Submitted>): Order<Paid> {
+export function payOrder(order: StagedOrder<Submitted>): StagedOrder<Paid> {
   return { id: order.id, amount: order.amount, stage: "paid", [StageTag]: { stage: "paid" } as Paid };
 }
 
 // Only paid orders expose a receipt.
-export function receiptFor(order: Order<Paid>): string {
+export function receiptFor(order: StagedOrder<Paid>): string {
   return `paid ${order.amount} for ${order.id}`;
 }
 ```
@@ -907,7 +1047,18 @@ export function receiptFor(order: Order<Paid>): string {
 Correct usage flows through the compiler.
 
 ```ts
-const draft = createDraftOrder("ord_1", 5000 as Cents);
+import { parseCents } from "./money.js";
+import { parseOrderId } from "./order-id.js";
+
+const demoOrderId = parseOrderId("ord_1");
+if (!demoOrderId.ok) {
+  throw new Error("bad fixture");
+}
+const demoAmount = parseCents(5000);
+if (!demoAmount.ok) {
+  throw new Error("bad fixture");
+}
+const draft = createDraftOrder(demoOrderId.value, demoAmount.value);
 const submitted = submitOrder(draft);
 const paid = payOrder(submitted);
 console.log(receiptFor(paid));
@@ -916,24 +1067,23 @@ console.log(receiptFor(paid));
 Illegal transitions do not compile.
 
 ```ts
-// @ts-expect-error - cannot pay a draft: payOrder needs Order<Submitted>.
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-const illegal = payOrder(draft);
+// @ts-expect-error - cannot pay a draft: payOrder needs StagedOrder<Submitted>.
+const _illegal = payOrder(draft);
 
-// @ts-expect-error - receipt needs Order<Paid>, not Order<Submitted>.
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-const early = receiptFor(submitted);
+// @ts-expect-error - receipt needs StagedOrder<Paid>, not StagedOrder<Submitted>.
+const _early = receiptFor(submitted);
 ```
 
 TypeScript cannot destroy the old `draft` binding the way Rust moves it.
 `submitOrder(draft)` does not invalidate `draft` at runtime.
-Sustain the pattern by discipline: prefer shadowing (`const order = submitOrder(order)`), lint against reuse after transition in small modules, and keep the `StageTag` key non-exported so nobody can hand-forge `Order<Paid>`.
+Sustain the pattern by discipline: prefer rebinding (`let order = createDraftOrder(...); order = submitOrder(order)`) or new names (`const submitted = submitOrder(order)`), lint against reuse after transition in small modules, and keep the `StageTag` value module-private in real code (exported here only for `declaration:true`). Forging still needs `as`, so opacity stays disciplinary.
 Honesty matters here: the compiler proves the new value has the right stage, but only code review proves the old binding was dropped.
 
 Use type-state when the sequence matters and the cost of a wrong transition is high: payments, provisioning, publishing, and multi-step onboarding.
 A good heuristic is two or more ordered states with different available operations.
 Do not use it for every boolean, or generic noise will drown the domain.
 A single `isArchived` flag with one branch is a runtime check, not a lifecycle.
+`alreadyRefunded: boolean` in OrderSnapshot covers persistence across restarts. `StagedOrder` prevents illegal in-memory transitions. Use both: type-state for moves, flag for storage.
 
 ---
 
@@ -1005,6 +1155,7 @@ describe("parseEmail properties", () => {
           expect(result.ok).toBe(true);
         },
       ),
+      { seed: 42, numRuns: 1000 },
     );
   });
 
@@ -1013,6 +1164,23 @@ describe("parseEmail properties", () => {
       fc.property(fc.string({ minLength: 1, maxLength: 32 }).filter((s) => !s.includes("@")), (raw) => {
         expect(parseEmail(raw).ok).toBe(false);
       }),
+      { seed: 42, numRuns: 1000 },
+    );
+  });
+
+  test("double @ never parses", () => {
+    fc.assert(
+      fc.property(
+        fc.tuple(
+          fc.stringOf(fc.constantFrom(..."abcdefghijklmnopqrstuvwxyz"), { minLength: 1, maxLength: 8 }),
+          fc.stringOf(fc.constantFrom(..."abcdefghijklmnopqrstuvwxyz"), { minLength: 1, maxLength: 8 }),
+          fc.stringOf(fc.constantFrom(..."abcdefghijklmnopqrstuvwxyz"), { minLength: 2, maxLength: 4 }),
+        ),
+        ([a, b, c]) => {
+          expect(parseEmail(`${a}@${b}@${c}`).ok).toBe(false);
+        },
+      ),
+      { seed: 42, numRuns: 1000 },
     );
   });
 
@@ -1022,6 +1190,7 @@ describe("parseEmail properties", () => {
         // Any string must map to Ok or Err, never throw.
         expect(() => parseEmail(raw)).not.toThrow();
       }),
+      { seed: 42, numRuns: 1000 },
     );
   });
 
@@ -1033,14 +1202,21 @@ describe("parseEmail properties", () => {
           expect(result.value).toBe(raw.trim());
         }
       }),
+      { seed: 42, numRuns: 1000 },
     );
   });
 });
 ```
 
+```json
+// tsconfig.json sketch. declaration:true needs the exported StageTag above.
+{ "compilerOptions": { "strict": true, "noUncheckedIndexedAccess": true, "declaration": true } }
+```
+
 Run with `vitest run` and keep the failing seed.
 `fast-check` shrinks failures to the minimal reproducer and prints the seed.
-Check that seed in as a regression test.
+Check that seed in as a regression test. Pin `seed` and `numRuns` in CI for determinism.
+Measure hot paths with a bench before claiming wins; dominant cost is usually IO, not parsing.
 Your parser gains mathematical robustness instead of anecdotal coverage: valid shapes always pass, invalid shapes always fail, hostile Unicode never throws, and normalization round-trips.
 
 ---
@@ -1066,22 +1242,23 @@ Define the pure core first.
 
 ```ts
 // core/refunds.ts - pure, sync, no IO.
-import type { Cents } from "./domain/brand.js";
-import type { Result } from "./domain/result.js";
-import type { DomainError } from "./domain/errors.js";
+import type { Cents, OrderId } from "../domain/brand.js";
+import type { Result } from "../domain/result.js";
+import type { DomainError } from "../domain/errors.js";
 
 export interface RefundPolicy {
-  readonly maxCents: number;
+  readonly maxCents: Cents;
 }
 
 export interface Refund {
-  readonly orderId: string;
+  readonly orderId: OrderId;
   readonly amount: Cents;
 }
 
 export interface OrderSnapshot {
-  readonly orderId: string;
-  readonly balance: number;
+  readonly orderId: OrderId;
+  readonly email: import("../domain/brand.js").Email;
+  readonly balance: Cents;
   readonly alreadyRefunded: boolean;
 }
 
@@ -1090,7 +1267,7 @@ export function calculateRefund(
   requested: Cents,
   policy: RefundPolicy,
 ): Result<Refund, DomainError> {
-  // Pure function: all inputs are already proven types.
+  // Pure function: balance and policy are already proven Cents, email travels with the order.
   if (order.alreadyRefunded) {
     return { ok: false, error: { kind: "AlreadyRefunded", orderId: order.orderId } };
   }
@@ -1098,7 +1275,7 @@ export function calculateRefund(
     return { ok: false, error: { kind: "InsufficientFunds", requested, balance: order.balance } };
   }
   if (requested > policy.maxCents) {
-    return { ok: false, error: { kind: "InvalidAmount" } };
+    return { ok: false, error: { kind: "ExceedsMax", max: policy.maxCents } };
   }
   return { ok: true, value: { orderId: order.orderId, amount: requested } };
 }
@@ -1125,11 +1302,14 @@ The Hono handler bridges the two worlds and nothing more.
 // shell/handlers.ts - thin async shell around the pure core.
 import { Hono } from "hono";
 import { RefundRequestDto } from "./dto.js";
-import { parseEmail } from "./domain/email.js";
-import { parseCents } from "./domain/money.js";
-import { calculateRefund } from "./core/refunds.js";
-import type { DomainError } from "./domain/errors.js";
-import { domainToMessage, domainToStatus } from "./shell/http-status.js";
+import { parseEmail } from "../domain/email.js";
+import { parseCents } from "../domain/money.js";
+import { parseOrderId } from "../domain/order-id.js";
+import { calculateRefund } from "../core/refunds.js";
+import type { DomainError } from "../domain/errors.js";
+import type { AppError } from "../app/errors.js";
+import { domainToMessage, domainToStatus } from "../domain/status.js";
+import { reportAppError } from "./handler-helpers.js";
 
 const app = new Hono();
 
@@ -1138,7 +1318,9 @@ app.post("/refund", async (c) => {
   const raw: unknown = await c.req.json().catch(() => null);
   const shaped = RefundRequestDto.safeParse(raw);
   if (!shaped.success) {
-    return c.json({ error: shaped.error.message }, 400);
+    // Never leak zod.error.message or raw input: may contain PII and schema internals.
+    console.warn("bad shape", { issues: shaped.error.issues.length });
+    return c.json({ error: "invalid request" }, 400);
   }
 
   const email = parseEmail(shaped.data.email);
@@ -1151,25 +1333,50 @@ app.post("/refund", async (c) => {
     const domainError: DomainError = { kind: "InvalidAmount" };
     return c.json({ error: domainToMessage(domainError) }, domainToStatus(domainError));
   }
-
-  // 2. Rehydrate minimal state, then call the pure core.
-  const order = { orderId: shaped.data.orderId, balance: 10_000, alreadyRefunded: false };
-  const refund = calculateRefund(order, amount.value, { maxCents: 500_000 });
-  if (!refund.ok) {
-    return c.json({ error: domainToMessage(refund.error) }, domainToStatus(refund.error));
+  const orderId = parseOrderId(shaped.data.orderId);
+  if (!orderId.ok) {
+    // Malformed id is 400 via InvalidOrderId. UserNotFound 404 is only for DB absence.
+    const appError: AppError = {
+      kind: "Domain",
+      error: { kind: "InvalidOrderId" },
+    };
+    const report = reportAppError(appError, console);
+    return c.json(report.body, report.status as 400 | 404 | 422 | 500);
   }
 
-  // 3. Map to transport. No business logic here.
-  void email.value;
+  // 2. Skeleton: replace with repo.find(orderId) returning Result<OrderSnapshot, AppError>.
+  // Shell never mints: parse known fixtures so the single owner stays money.ts.
+  const balance = parseCents(10_000);
+  if (!balance.ok) {
+    throw new Error("bad fixture");
+  }
+  const cap = parseCents(500_000);
+  if (!cap.ok) {
+    throw new Error("bad fixture");
+  }
+  const order = {
+    orderId: orderId.value,
+    email: email.value,
+    balance: balance.value,
+    alreadyRefunded: false,
+  };
+  const refund = calculateRefund(order, amount.value, { maxCents: cap.value });
+  if (!refund.ok) {
+    const report = reportAppError({ kind: "Domain", error: refund.error }, console);
+    return c.json(report.body, report.status as 400 | 404 | 422 | 500);
+  }
+
+  // 3. Map to transport. No business logic here. Email was proven at the boundary and travels in OrderSnapshot.
   return c.json({ orderId: refund.value.orderId, refundedCents: refund.value.amount }, 200);
 });
 
 export default app;
 ```
 
-The same shape works in Fastify: replace `c.req.json()` with `request.body` and `c.json()` with `reply.code().send()`.
+The same shape works in Fastify: `request.body` is already parsed (sync, not a promise like `c.req.json()`), and `c.json()` becomes `reply.code().send()`.
 The core does not change because it never imported the framework.
 
+Production notes: require `Idempotency-Key` on POST /refund and dedup by key so legitimate retries never hit 422 twice. Emit `refund_total{kind}` counter and latency histogram. Log with `request_id` and `order_id` span, never raw email. Keep `calculateRefund` sync and fast or move it to a worker; never block the event loop.
 Testing splits cleanly.
 Unit test `calculateRefund` with plain structs and no mocks: it is sync and deterministic.
 Integration test the handler with real JSON payloads over HTTP: malformed JSON, bad email, negative amount, and double refund each assert their status code.
@@ -1183,12 +1390,12 @@ The core stays fast because effects live only in the shell.
 |---|---|---|---|
 | Boundary parsing | `if` guards repeated in every function over raw `string` | `parseEmail(unknown)` returns `Result<Email, EmailError>` once, then moves the proof in the type | Single source of truth for the invariant, zero repeated checks in the core |
 | Branded types | Plain `string` aliases, forgeable anywhere with no distinction | `Brand<string, "Email">` minted only by the smart constructor module, `as` banned elsewhere by lint | Disciplinary unforgeability despite erasure, enforced by modules and review |
-| Totality | `amount / parts` and `arr[i]` that throw or yield `undefined` on edge inputs | `Cents` plus `Result` forces explicit handling of zero, NaN, and missing index under `noUncheckedIndexedAccess` | Edge cases become compile-time obligations instead of production incidents |
+| Totality | `amount / parts` and `arr[i]` that silently yield `Infinity`, `NaN`, or `undefined` on edge inputs | `Cents` plus `Result` forces explicit handling of zero, NaN, and missing index by discipline, with `noUncheckedIndexedAccess` for indexing | Edge cases become check-time obligations instead of production incidents |
 | Composition | Nested `if` pyramids with early `throw` at every level | `andThen`, `map`, `mapErr`, and manual early return on the `Result` railway | Linear happy path with a typed error track, errors classified by type |
 | Domain errors | `throw new Error(string)` messages, caught as `unknown`, easy to misclassify | Exhaustive `DomainError` union, `switch` plus `assertNever` must cover every variant | Callers cannot ignore a new business case, refactors break loudly at build time |
 | App edge errors | One catch-all `catch` mapping everything to 400 | `AppError` wrapping infra with `cause`, shell mapping domain to 4xx and infra to 500 with logs | Rich operational context where humans read logs, precise types where code branches |
-| Workflow state | Boolean flags like `isPaid` checked with `if` before each action | Type-state `Order<Draft>` to `Order<Paid>` with stage-tagged generics | Illegal transitions do not compile, stage-specific methods disappear by type |
-| Hot-path cost | `safeParse` repeated in handler, service, and repo for the same value | Parse once at the edge, thread zero-runtime brands with no allocation | Proof without performance tax, ideal for validators and routers |
+| Workflow state | Boolean flags like `isPaid` checked with `if` before each action | Type-state `StagedOrder<Draft>` to `StagedOrder<Paid>` with stage-tagged generics | Illegal transitions do not compile, stage-specific methods disappear by type |
+| Hot-path cost | `safeParse` repeated in handler, service, and repo for the same value | Parse once at the edge, thread zero-runtime brands for the proof itself; `Order` construction with `Symbol` still allocates, so keep it out of the hot path | Proof without repeated validation tax, ideal for validators and routers |
 | Testing | Hand-picked unit cases with a few literal strings | `fast-check` with hundreds of Unicode and adversarial inputs plus shrinking and seeds | Mathematical confidence in parsers, minimal reproducers on failure |
 | Architecture | Handlers mix Zod parsing, DB calls, and business rules with `async` everywhere | Pure sync core with `calculateRefund` plus thin async Hono and Zod shell | Core is trivially testable and portable, effects are isolated and auditable |
 
@@ -1233,16 +1440,16 @@ Continue with [Stop Validating Everywhere: An Architectural Guide to Error Handl
 ### Bibliography
 
 * Alexis King, *Parse, don't validate* (2019).
-Quotation: validation preserves the weak type, parsing produces a strong type.
+Core idea: validation preserves the weak type, parsing produces a strong type.
 * Paul Chiusano and Runar Bjarnason, *Functional Programming in Scala* (2014).
-Quotation: prefer total functions, algebraic data types, and effect-free composition.
+Core idea: prefer total functions, algebraic data types, and effect-free composition.
 * Harold Abelson and Gerald Jay Sussman, *Structure and Interpretation of Computer Programs* (1996).
-Quotation: code is data, build embedded languages to express domain intent.
+Core idea: code is data, build embedded languages to express domain intent.
 * Eric Evans, *Domain-Driven Design* (2003).
-Quotation: protect invariants inside aggregates with value objects and explicit boundaries.
+Core idea: protect invariants inside aggregates with value objects and explicit boundaries.
 * Edwin Brady, *Type-Driven Development with Idris* (2017).
-Quotation: use types as a design tool to guide execution and reject invalid programs early.
+Core idea: use types as a design tool to guide execution and reject invalid programs early.
 * Scott Wlaschin, *Railway Oriented Programming* (2013).
-Quotation: model success and error as parallel tracks composed with monadic bind.
+Core idea: model success and error as parallel tracks composed with bind.
 * Gary Bernhardt, *Functional Core, Imperative Shell* (2012).
-Quotation: keep the domain pure and push IO to a thin outer shell.
+Core idea: keep the domain pure and push IO to a thin outer shell.
