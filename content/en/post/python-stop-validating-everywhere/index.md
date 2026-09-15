@@ -44,7 +44,7 @@ series:
 * **Stratify errors.**
   Use an exhaustive frozen union for domain errors and wrap infrastructure failures once at the application edge.
 * **Push invariants into the checker.**
-  Use the type-state pattern, `mypy --strict` / `pyright`, parse-once value objects with `slots`, and a pure functional core wrapped by a thin FastAPI and Pydantic shell.
+  Use the type-state pattern, `mypy --strict` / `pyright`, parse-once value objects with `slots`, and a pure functional core wrapped by a thin FastAPI and Pydantic shell with protocol ports.
 * This post is the Python chapter of the Error Handling series.
   It assumes Python 3.12+, `mypy --strict`, and Pydantic v2, and uses `Generic`, `Literal`, `Annotated`, `TypeVar`, `Never`, `match`, FastAPI, and Hypothesis in examples. `Result` is a custom `Ok | Err` union, not stdlib. It builds every pattern from dataclasses, modules, and `Result`.
 
@@ -1129,7 +1129,8 @@ It speaks HTTP and JSON, parses at the boundary, calls the core, and maps typed 
 ```mermaid
 graph TB
     HTTP[FastAPI handler: async shell] --> Parse[Pydantic DTO plus smart constructors]
-    Parse --> Core[Pure core: calculate_refund]
+    Parse --> Load[Load via OrderRepository port]
+    Load --> Core[Pure core: calculate_refund]
     Core --> Map[Map DomainError to HTTP]
     Map --> HTTPResp[JSON response]
 ```
@@ -1185,33 +1186,69 @@ class RefundRequestDto(BaseModel):
 ```
 
 The FastAPI handler bridges the two worlds and nothing more.
+Decouple it from infrastructure with a protocol port.
+The port lives in the app layer and speaks only domain types.
+The shell provides the adapter and FastAPI injects it with `Depends`.
+
+```python
+# app/ports.py - hexagon port, domain types only.
+from typing import Protocol
+
+
+class OrderRepository(Protocol):
+    async def find(self, order_id: OrderId) -> Result[OrderSnapshot | None, DbError]:
+        ...
+```
+
+```python
+# shell/postgres_repo.py - one adapter behind the port.
+# SQL rows re-enter the domain via OrderId.parse, parse_email, and Cents.parse.
+class PostgresOrderRepository:
+    def __init__(self, pool: object) -> None:
+        self._pool = pool
+
+    async def find(self, order_id: OrderId) -> Result[OrderSnapshot | None, DbError]:
+        try:
+            _ = (order_id, self._pool)
+            return Ok(None)
+        except Exception as exc:
+            return Err(DbError(cause=exc))
+
+
+# tests/fakes.py - fake for tests and dev.
+class InMemoryOrderRepository:
+    def __init__(self) -> None:
+        self._orders: dict[str, OrderSnapshot] = {}
+
+    def seed(self, order: OrderSnapshot) -> None:
+        self._orders[str(order.order_id)] = order
+
+    async def find(self, order_id: OrderId) -> Result[OrderSnapshot | None, DbError]:
+        return Ok(self._orders.get(str(order_id)))
+```
 
 ```python
 # shell/handlers.py - thin async shell around the pure core.
-from fastapi import FastAPI, Request
+from typing import Annotated
+
+from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
 shell_app = FastAPI()
 
 
-async def load_order(order_id: OrderId, email: Email) -> Result[OrderSnapshot, DbError]:
-    # Skeleton: replace with real DB fetch.
-    # OrderSnapshot construction itself never raises, so no try here.
-    # Real repo wraps its query in try/except Exception as exc: return Err(DbError(cause=exc)).
-    # Email was proven at the boundary and travels with the snapshot.
-    # Shell never mints: parse fixtures so _mint_after_check stays in cents-adjacent modules.
-    balance = Cents.parse(10_000)
-    assert isinstance(balance, Ok)
-    return Ok(
-        OrderSnapshot(
-            order_id=order_id, email=email, balance=balance.value, already_refunded=False
-        )
-    )
+def get_order_repository() -> OrderRepository:
+    # Wired once at startup to the Postgres adapter.
+    # Tests override with shell_app.dependency_overrides and the in-memory fake.
+    raise NotImplementedError
 
 
 @shell_app.post("/refund", response_model=None)
-async def refund_handler(request: Request) -> JSONResponse:
+async def refund_handler(
+    request: Request,
+    repo: Annotated[OrderRepository, Depends(get_order_repository)],
+) -> JSONResponse:
     # Manual Request parsing loses FastAPI auto OpenAPI and 422 docs.
     # Use this shape only to show the boundary explicitly.
     # For auto docs, use dto: RefundRequestDto as the param instead.
@@ -1239,13 +1276,16 @@ async def refund_handler(request: Request) -> JSONResponse:
         err: DomainError = UserNotFound(user_id=shaped.order_id)
         return JSONResponse({"error": domain_to_message(err)}, status_code=domain_to_status(err))
 
-    # 2. Load state through the imperative shell, then call the pure core.
-    loaded = await load_order(order_id.value, email.value)
+    # 2. Load persisted state through the port. Never fabricate Order from request amount.
+    loaded = await repo.find(order_id.value)
     if isinstance(loaded, Err):
         return JSONResponse(
             {"error": "internal error"},
             status_code=app_to_status(loaded.error),
         )
+    if loaded.value is None:
+        err: DomainError = UserNotFound(user_id=shaped.order_id)
+        return JSONResponse({"error": domain_to_message(err)}, status_code=domain_to_status(err))
     order = loaded.value
     cap = Cents.parse(500_000)
     assert isinstance(cap, Ok)
@@ -1267,7 +1307,8 @@ async def refund_handler(request: Request) -> JSONResponse:
 Production notes: require `Idempotency-Key` on POST /refund with dedup so retries never double-charge. Emit `refund_total{kind}` counter and latency histogram. Log with `request_id` and `order_id`, never raw email. Keep `calculate_refund` sync and fast or run it in an executor; never block the loop.
 Testing splits cleanly.
 Unit test `calculate_refund` with plain structs and no mocks: it is sync and deterministic.
-Integration test the handler with real JSON payloads over HTTP: malformed JSON, bad email, negative amount, and double refund each assert their status code.
+Integration test the handler with an `InMemoryOrderRepository` via `dependency_overrides` and real JSON payloads over HTTP: malformed JSON, bad email, negative amount, and double refund each assert their status code.
+Swap the adapter without touching the core because the handler depends only on the protocol.
 The core stays fast because effects live only in the shell.
 
 ---
@@ -1283,9 +1324,10 @@ The core stays fast because effects live only in the shell.
 | Domain errors | `raise ValueError(str)` messages, caught as `Exception`, easy to misclassify | Exhaustive `DomainError` union, `match` plus `assert_never` must cover every variant | Callers cannot ignore a new business case, refactors break loudly at check time |
 | App edge errors | One catch-all `except Exception` mapping everything to 400 | `AppError` wrapping infra with `cause`, shell mapping domain to 4xx and infra to 500 with logs | Rich operational context where humans read logs, precise types where code branches |
 | Workflow state | Boolean flags like `is_paid` checked with `if` before each action | Type-state `OrderState[Draft]` to `OrderState[Paid]` with stage generics | Illegal transitions are checker errors, stage-specific methods disappear by type |
+| Dependencies | Concrete repo hardwired to the driver inside the handler | `OrderRepository` protocol port injected via FastAPI `Depends` with Postgres and in-memory impls | Infra swaps without touching the core, tests need no database |
 | Hot-path cost | `model_validate` repeated in handler, service, and repo for the same value | Parse once at the edge, thread `slots` value objects with no revalidation | Proof without performance tax, ideal for routers and workers |
 | Testing | Hand-picked unit cases with a few literal strings | Hypothesis with hundreds of Unicode and adversarial inputs plus shrinking and `@example` | Mathematical confidence in parsers, minimal reproducers on failure |
-| Architecture | Handlers mix Pydantic parsing, DB calls, and business rules with `async` everywhere | Pure sync core with `calculate_refund` plus thin async FastAPI and Pydantic shell | Core is trivially testable and portable, effects are isolated and auditable |
+| Architecture | Handlers mix Pydantic parsing, DB calls, and business rules with `async` everywhere | Pure sync core with `calculate_refund` plus thin async FastAPI shell behind an `OrderRepository` protocol port | Core is trivially testable and portable, effects are isolated behind swappable adapters |
 
 Keep this table as a review checklist.
 If a row drifts left, push the proof back into the type.
@@ -1316,7 +1358,7 @@ Never leak bare `Exception` strings from domain APIs, and never let the domain i
 **5. Push workflows and costs into the type system.**
 Use type-state with stage generics for ordered lifecycles with two or more distinct operations.
 Use `slots` value objects on hot paths instead of repeated Pydantic parsing.
-Cover parsers with Hypothesis and keep the FastAPI shell thin around a pure functional core.
+Cover parsers with Hypothesis and keep the FastAPI shell thin around a pure functional core behind protocol ports.
 
 Stop defending every function against data you already checked.
 Prove it once, encode it in a type, and let the checker stand guard while you model the domain.

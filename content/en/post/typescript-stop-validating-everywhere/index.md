@@ -43,7 +43,7 @@ Make illegal states unrepresentable by construction.
 * **Stratify errors.**
 Use an exhaustive discriminated union for domain errors and wrap infrastructure failures with `cause` only at the application edge.
 * **Push invariants into the compiler.**
-Use the type-state pattern, zero-runtime brands, and a pure functional core wrapped by a thin Hono or Fastify and Zod shell.
+Use the type-state pattern, zero-runtime brands, and a pure functional core wrapped by a thin Hono or Fastify and Zod shell with interface ports.
 ```json
 // package.json sketch with pinned versions.
 {
@@ -1233,7 +1233,8 @@ It speaks HTTP and JSON, parses at the boundary, calls the core, and maps typed 
 ```mermaid
 graph TB
     HTTP[Hono handler: async shell] --> Parse[Zod DTO plus smart constructors]
-    Parse --> Core[Pure core: calculateRefund]
+    Parse --> Load[Load via OrderRepository port]
+    Load --> Core[Pure core: calculateRefund]
     Core --> Map[Map DomainError to HTTP]
     Map --> HTTPResp[JSON response]
 ```
@@ -1297,6 +1298,55 @@ export type RefundRequestDto = z.infer<typeof RefundRequestDto>;
 ```
 
 The Hono handler bridges the two worlds and nothing more.
+Decouple it from infrastructure with an interface port.
+The port lives in the app layer and speaks only domain types.
+The shell provides the adapter and the handler receives it through a factory.
+
+```ts
+// app/ports.ts - hexagon port, domain types only.
+import type { OrderId } from "../domain/brand.js";
+import type { OrderSnapshot, RefundPolicy } from "../core/refunds.js";
+
+export interface OrderRepository {
+  find(orderId: OrderId): Promise<OrderSnapshot | null>;
+}
+
+export interface AppDeps {
+  readonly repo: OrderRepository;
+  readonly policy: RefundPolicy;
+}
+```
+
+```ts
+// shell/postgres-repo.ts - one adapter behind the port.
+// SQL rows re-enter the domain through parseOrderId, parseEmail, and parseCents.
+import type { OrderId } from "../domain/brand.js";
+import type { OrderSnapshot } from "../core/refunds.js";
+import type { OrderRepository } from "../app/ports.js";
+
+export class PostgresOrderRepository implements OrderRepository {
+  constructor(
+    private readonly pool: {
+      query: (sql: string, params: unknown[]) => Promise<{ rows: unknown[] }>;
+    },
+  ) {}
+  async find(orderId: OrderId): Promise<OrderSnapshot | null> {
+    const _ = (orderId, this.pool);
+    return null;
+  }
+}
+
+// shell/memory-repo.ts - fake for tests and dev.
+export class InMemoryOrderRepository implements OrderRepository {
+  private readonly orders = new Map<string, OrderSnapshot>();
+  seed(order: OrderSnapshot): void {
+    this.orders.set(order.orderId as string, order);
+  }
+  async find(orderId: OrderId): Promise<OrderSnapshot | null> {
+    return this.orders.get(orderId as string) ?? null;
+  }
+}
+```
 
 ```ts
 // shell/handlers.ts - thin async shell around the pure core.
@@ -1307,79 +1357,88 @@ import { parseCents } from "../domain/money.js";
 import { parseOrderId } from "../domain/order-id.js";
 import { calculateRefund } from "../core/refunds.js";
 import type { DomainError } from "../domain/errors.js";
+import type { UserId } from "../domain/brand.js";
 import type { AppError } from "../app/errors.js";
+import type { AppDeps } from "../app/ports.js";
 import { domainToMessage, domainToStatus } from "../domain/status.js";
 import { reportAppError } from "./handler-helpers.js";
 
-const app = new Hono();
+export function createRefundHandler(deps: AppDeps): Hono {
+  const app = new Hono();
 
-app.post("/refund", async (c) => {
-  // 1. Parse at the boundary: unknown JSON becomes proven brands.
-  const raw: unknown = await c.req.json().catch(() => null);
-  const shaped = RefundRequestDto.safeParse(raw);
-  if (!shaped.success) {
-    // Never leak zod.error.message or raw input: may contain PII and schema internals.
-    console.warn("bad shape", { issues: shaped.error.issues.length });
-    return c.json({ error: "invalid request" }, 400);
-  }
+  app.post("/refund", async (c) => {
+    // 1. Parse at the boundary: unknown JSON becomes proven brands.
+    const raw: unknown = await c.req.json().catch(() => null);
+    const shaped = RefundRequestDto.safeParse(raw);
+    if (!shaped.success) {
+      // Never leak zod.error.message or raw input: may contain PII and schema internals.
+      console.warn("bad shape", { issues: shaped.error.issues.length });
+      return c.json({ error: "invalid request" }, 400);
+    }
 
-  const email = parseEmail(shaped.data.email);
-  if (!email.ok) {
-    const domainError: DomainError = { kind: "InvalidEmail", error: email.error };
-    return c.json({ error: domainToMessage(domainError) }, domainToStatus(domainError));
-  }
-  const amount = parseCents(shaped.data.amountCents);
-  if (!amount.ok) {
-    const domainError: DomainError = { kind: "InvalidAmount" };
-    return c.json({ error: domainToMessage(domainError) }, domainToStatus(domainError));
-  }
-  const orderId = parseOrderId(shaped.data.orderId);
-  if (!orderId.ok) {
-    // Malformed id is 400 via InvalidOrderId. UserNotFound 404 is only for DB absence.
-    const appError: AppError = {
-      kind: "Domain",
-      error: { kind: "InvalidOrderId" },
-    };
-    const report = reportAppError(appError, console);
-    return c.json(report.body, report.status as 400 | 404 | 422 | 500);
-  }
+    const email = parseEmail(shaped.data.email);
+    if (!email.ok) {
+      const domainError: DomainError = { kind: "InvalidEmail", error: email.error };
+      return c.json({ error: domainToMessage(domainError) }, domainToStatus(domainError));
+    }
+    const amount = parseCents(shaped.data.amountCents);
+    if (!amount.ok) {
+      const domainError: DomainError = { kind: "InvalidAmount" };
+      return c.json({ error: domainToMessage(domainError) }, domainToStatus(domainError));
+    }
+    const orderId = parseOrderId(shaped.data.orderId);
+    if (!orderId.ok) {
+      // Malformed id is 400 via InvalidOrderId. UserNotFound 404 is only for DB absence.
+      const appError: AppError = {
+        kind: "Domain",
+        error: { kind: "InvalidOrderId" },
+      };
+      const report = reportAppError(appError, console);
+      return c.json(report.body, report.status as 400 | 404 | 422 | 500);
+    }
 
-  // 2. Skeleton: replace with repo.find(orderId) returning Result<OrderSnapshot, AppError>.
-  // Shell never mints: parse known fixtures so the single owner stays money.ts.
-  const balance = parseCents(10_000);
-  if (!balance.ok) {
-    throw new Error("bad fixture");
-  }
-  const cap = parseCents(500_000);
-  if (!cap.ok) {
-    throw new Error("bad fixture");
-  }
-  const order = {
-    orderId: orderId.value,
-    email: email.value,
-    balance: balance.value,
-    alreadyRefunded: false,
-  };
-  const refund = calculateRefund(order, amount.value, { maxCents: cap.value });
-  if (!refund.ok) {
-    const report = reportAppError({ kind: "Domain", error: refund.error }, console);
-    return c.json(report.body, report.status as 400 | 404 | 422 | 500);
-  }
+    // 2. Load persisted state through the port. Never fabricate Order from request amount.
+    let order;
+    try {
+      order = await deps.repo.find(orderId.value);
+    } catch (cause) {
+      const report = reportAppError({ kind: "Database", cause }, console);
+      return c.json(report.body, report.status as 400 | 404 | 422 | 500);
+    }
+    if (order === null) {
+      // Trimmed example: the refund DTO carries no userId, so the miss reuses the request identity.
+      // Real schemas look up by userId and construct UserNotFound without casts.
+      const userId = orderId.value as unknown as UserId;
+      const report = reportAppError(
+        { kind: "Domain", error: { kind: "UserNotFound", userId } },
+        console,
+      );
+      return c.json(report.body, report.status as 400 | 404 | 422 | 500);
+    }
+    const refund = calculateRefund(order, amount.value, deps.policy);
+    if (!refund.ok) {
+      const report = reportAppError({ kind: "Domain", error: refund.error }, console);
+      return c.json(report.body, report.status as 400 | 404 | 422 | 500);
+    }
 
-  // 3. Map to transport. No business logic here. Email was proven at the boundary and travels in OrderSnapshot.
-  return c.json({ orderId: refund.value.orderId, refundedCents: refund.value.amount }, 200);
-});
+    // 3. Map to transport. No business logic here. Email was proven at the boundary and travels in OrderSnapshot.
+    return c.json({ orderId: refund.value.orderId, refundedCents: refund.value.amount }, 200);
+  });
 
-export default app;
+  return app;
+}
 ```
 
+Wire once at startup: parse the policy cap a single time and pass `{ repo, policy }` into `createRefundHandler`.
+Tests pass an `InMemoryOrderRepository` instead of Postgres, so no database is needed.
 The same shape works in Fastify: `request.body` is already parsed (sync, not a promise like `c.req.json()`), and `c.json()` becomes `reply.code().send()`.
 The core does not change because it never imported the framework.
 
 Production notes: require `Idempotency-Key` on POST /refund and dedup by key so legitimate retries never hit 422 twice. Emit `refund_total{kind}` counter and latency histogram. Log with `request_id` and `order_id` span, never raw email. Keep `calculateRefund` sync and fast or move it to a worker; never block the event loop.
 Testing splits cleanly.
 Unit test `calculateRefund` with plain structs and no mocks: it is sync and deterministic.
-Integration test the handler with real JSON payloads over HTTP: malformed JSON, bad email, negative amount, and double refund each assert their status code.
+Integration test the handler with an `InMemoryOrderRepository` and real JSON payloads over HTTP: malformed JSON, bad email, negative amount, and double refund each assert their status code.
+Swap the adapter without touching the core because the handler depends only on the interface.
 The core stays fast because effects live only in the shell.
 
 ---
@@ -1395,9 +1454,10 @@ The core stays fast because effects live only in the shell.
 | Domain errors | `throw new Error(string)` messages, caught as `unknown`, easy to misclassify | Exhaustive `DomainError` union, `switch` plus `assertNever` must cover every variant | Callers cannot ignore a new business case, refactors break loudly at build time |
 | App edge errors | One catch-all `catch` mapping everything to 400 | `AppError` wrapping infra with `cause`, shell mapping domain to 4xx and infra to 500 with logs | Rich operational context where humans read logs, precise types where code branches |
 | Workflow state | Boolean flags like `isPaid` checked with `if` before each action | Type-state `StagedOrder<Draft>` to `StagedOrder<Paid>` with stage-tagged generics | Illegal transitions do not compile, stage-specific methods disappear by type |
+| Dependencies | Concrete repo hardwired to the driver inside the handler | `OrderRepository` interface port injected via handler factory with Postgres and in-memory impls | Infra swaps without touching the core, tests need no database |
 | Hot-path cost | `safeParse` repeated in handler, service, and repo for the same value | Parse once at the edge, thread zero-runtime brands for the proof itself; `Order` construction with `Symbol` still allocates, so keep it out of the hot path | Proof without repeated validation tax, ideal for validators and routers |
 | Testing | Hand-picked unit cases with a few literal strings | `fast-check` with hundreds of Unicode and adversarial inputs plus shrinking and seeds | Mathematical confidence in parsers, minimal reproducers on failure |
-| Architecture | Handlers mix Zod parsing, DB calls, and business rules with `async` everywhere | Pure sync core with `calculateRefund` plus thin async Hono and Zod shell | Core is trivially testable and portable, effects are isolated and auditable |
+| Architecture | Handlers mix Zod parsing, DB calls, and business rules with `async` everywhere | Pure sync core with `calculateRefund` plus thin async Hono shell behind an `OrderRepository` interface port | Core is trivially testable and portable, effects are isolated behind swappable adapters |
 
 Keep this table as a review checklist.
 If a row drifts left, push the proof back into the type.
@@ -1428,7 +1488,7 @@ Never leak `unknown` or thrown `string` from domain APIs, and never let the doma
 **5. Push workflows and costs into the type system.**
 Use type-state with stage generics for ordered lifecycles with two or more distinct operations.
 Use zero-runtime brands on hot paths instead of wrapper objects.
-Cover parsers with `fast-check` and keep the Hono or Fastify shell thin around a pure functional core.
+Cover parsers with `fast-check` and keep the Hono or Fastify shell thin around a pure functional core behind interface ports.
 
 Stop defending every function against data you already checked.
 Prove it once, encode it in a type, and let the compiler stand guard while you model the domain.
