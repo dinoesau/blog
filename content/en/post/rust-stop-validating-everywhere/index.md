@@ -43,7 +43,7 @@ Make illegal states unrepresentable by construction.
 * **Stratify errors.**
 Use `thiserror` for exhaustive domain errors in libraries and `anyhow` with context only at the application edge.
 * **Push invariants into the compiler.**
-Use the type-state pattern, zero-cost borrowed newtypes, and a pure functional core wrapped by a thin Axum and Serde shell.
+Use the type-state pattern, zero-cost borrowed newtypes, and a pure functional core wrapped by a thin Axum and Serde shell with trait ports.
 * This post is the Rust chapter of the Error Handling series.
 It builds every pattern from `Result`, modules, traits, and ownership, and uses `thiserror`, `anyhow`, `nutype`, `proptest`, `sqlx`, `reqwest`, `tokio`, `axum`, `serde`, `syn`, and `quote` in examples.
 
@@ -1244,7 +1244,8 @@ It speaks HTTP and JSON, parses at the boundary, calls the core, and maps typed 
 ```mermaid
 graph TB
     HTTP[Axum handler: async shell] --> Parse[Serde DTO plus smart constructors]
-    Parse --> Core[Pure core: calculate_refund]
+    Parse --> Load[Load via OrderRepository port]
+    Load --> Core[Pure core: calculate_refund]
     Core --> Map[Map DomainError to HTTP]
     Map --> HTTPResp[JSON response]
 ```
@@ -1314,30 +1315,71 @@ pub struct RefundResponseDto {
 ```
 
 The Axum handler bridges the two worlds and nothing more.
+Decouple it from infrastructure with a trait port.
+The port lives in the app layer and speaks only domain types.
+The shell provides the adapter and Axum injects it via `State`.
+
+```rust
+// src/app/ports.rs
+use crate::domain::order::Order;
+use crate::domain::order_id::OrderId;
+
+pub trait OrderRepository: Send + Sync + 'static {
+    async fn find(&self, id: &OrderId) -> Result<Option<Order>, sqlx::Error>;
+}
+```
 
 ```rust
 // src/shell/handlers.rs
+use std::sync::Arc;
+
 use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
 
 use crate::app::error::AppError;
+use crate::app::ports::OrderRepository;
 use crate::core::refunds::{RefundPolicy, calculate_refund};
 use crate::domain::error::DomainError;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct AppState {
-    pub repo: OrderRepo,
+    pub repo: Arc<dyn OrderRepository>,
     pub policy: RefundPolicy,
 }
 
-#[derive(Debug, Clone)]
-pub struct OrderRepo;
+// src/shell/sqlx_repo.rs
+pub struct SqlxOrderRepo {
+    pool: sqlx::PgPool,
+}
 
-impl OrderRepo {
-    pub async fn find(&self, order_id: &str) -> Result<Order, AppError> {
-        // Replace with real sqlx query mapping sqlx::Error to AppError::Database
-        // and None to AppError::Domain(DomainError::UserNotFound).
-        let _ = order_id;
-        Err(AppError::Domain(DomainError::UserNotFound))
+impl OrderRepository for SqlxOrderRepo {
+    async fn find(&self, id: &OrderId) -> Result<Option<Order>, sqlx::Error> {
+        // SELECT id, user_id, email, amount_cents FROM orders WHERE id = $1.
+        // Map the row with OrderId::parse and friends, so DB rows re-enter the domain parsed.
+        let _ = (id, &self.pool);
+        Ok(None)
+    }
+}
+
+// tests/fakes.rs, also usable in dev.
+use std::collections::HashMap;
+use std::sync::Mutex;
+
+use crate::domain::order::Order;
+use crate::domain::order_id::OrderId;
+
+#[derive(Default)]
+pub struct InMemoryOrderRepo {
+    orders: Mutex<HashMap<String, Order>>,
+}
+
+impl OrderRepository for InMemoryOrderRepo {
+    async fn find(&self, id: &OrderId) -> Result<Option<Order>, sqlx::Error> {
+        Ok(self
+            .orders
+            .lock()
+            .expect("test lock is not poisoned")
+            .get(id.as_str())
+            .cloned())
     }
 }
 
@@ -1345,6 +1387,8 @@ pub async fn refund_handler(
     State(state): State<AppState>,
     Json(raw): Json<RefundRequestDto>,
 ) -> Result<impl IntoResponse, AppError> {
+    use crate::domain::cents::Cents;
+    use crate::domain::email::Email;
     use crate::domain::order_id::OrderId;
     // 1. Parse at the boundary. Malformed email rejects before any DB hit.
     // DB email remains authoritative; request email proves shape, not identity.
@@ -1352,8 +1396,13 @@ pub async fn refund_handler(
     let _request_email = Email::parse(&raw.email).map_err(DomainError::InvalidEmail)?;
     let amount = Cents::parse(raw.amount_cents).map_err(DomainError::InvalidAmount)?;
 
-    // 2. Load persisted state. Never fabricate Order from request amount.
-    let order = state.repo.find(order_id.as_str()).await?;
+    // 2. Load persisted state through the port. Never fabricate Order from request amount.
+    let order = state
+        .repo
+        .find(&order_id)
+        .await
+        .map_err(AppError::Database)?
+        .ok_or(DomainError::UserNotFound)?;
     let refund = calculate_refund(&order, amount, &state.policy)?;
 
     // 3. Map to DTO. No business logic here.
@@ -1400,7 +1449,8 @@ impl IntoResponse for AppError {
 Production notes: require `Idempotency-Key` on POST /refund with dedup so retries never double-charge. Emit `refund_total{kind}` counter and latency histogram with request_id/order_id spans. Never log raw email or DSNs via Display. Keep `calculate_refund` sync and fast; EmailRef must be promoted to owned before any await so futures stay 'static + Send.
 Testing splits cleanly.
 Unit test `calculate_refund` with plain structs and no mocks.
-Integration test the handler with `tower::ServiceExt::oneshot` and real JSON payloads.
+Integration test the handler with `InMemoryOrderRepo` plus `tower::ServiceExt::oneshot` and real JSON payloads.
+Swap the adapter without touching the core because the handler depends only on the trait.
 The core stays fast and deterministic because effects live only in the shell.
 
 ---
@@ -1416,9 +1466,10 @@ The core stays fast and deterministic because effects live only in the shell.
 | Domain errors | `Result<T, String>` messages, easy to swallow or misclassify | `thiserror` exhaustive enum, `match` must cover every variant | Callers cannot ignore a new business case, refactors break loudly at build time |
 | App edge errors | One catch-all error type from domain to `main` | `anyhow` with `.context()` only in `main` and binaries | Rich operational context where humans read logs, precise types where code branches |
 | Workflow state | Boolean flags like `is_paid` checked with `if` before each action | Type-state `StagedOrder<Draft>` to `StagedOrder<Paid>` with move semantics | Illegal transitions do not compile, stale handles are destroyed by ownership |
+| Dependencies | Concrete `OrderRepo` hardwired to sqlx inside the handler | `OrderRepository` trait port injected via Axum `State` with sqlx and in-memory impls | Infra swaps without touching the core, tests need no database |
 | Hot-path cost | Cloned `String` newtypes allocated on every layer | Borrowed `EmailRef<'a>` avoids revalidation allocation, promote to owned once; measure serde plus DB before claiming wins | Proof without repeated validation tax, ideal for routers and parsers |
 | Testing | Hand-picked `#[test]` cases with a few literal strings | `proptest` with thousands of Unicode and adversarial inputs plus shrinking | Mathematical confidence in parsers, minimal reproducers on failure |
-| Architecture | Handlers mix Serde parsing, DB calls, and business rules with `async` everywhere | Pure sync core with `calculate_refund` plus thin async Axum and Serde shell | Core is trivially testable and portable, effects are isolated and auditable |
+| Architecture | Handlers mix Serde parsing, DB calls, and business rules with `async` everywhere | Pure sync core with `calculate_refund` plus thin async Axum shell behind an `OrderRepository` trait port | Core is trivially testable and portable, effects are isolated behind swappable adapters |
 
 Keep this table as a review checklist.
 If a row drifts left, push the proof back into the type.
@@ -1448,7 +1499,7 @@ Never leak `anyhow` or `String` errors from domain APIs.
 **5. Push workflows and costs into the type system.**
 Use type-state with move semantics for ordered lifecycles.
 Use borrowed `EmailRef<'a>` views on hot paths.
-Cover parsers with `proptest` and keep the Axum shell thin around a pure functional core.
+Cover parsers with `proptest` and keep the Axum shell thin around a pure functional core behind trait ports.
 
 Stop defending every function against data you already checked.
 Prove it once, encode it in a type, and let `rustc` stand guard while you model the domain.
