@@ -30,6 +30,13 @@
 - FIBRAs
 - Index Funds
 - Personal Finance
+- Inference
+- Kubernetes
+- H100
+- vLLM
+- Multimodal
+- Observability
+- MLOps
 - markdown
 - css
 - html
