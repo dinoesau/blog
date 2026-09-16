@@ -874,7 +874,7 @@ Cada variante es un hecho de negocio que el llamador debe manejar.
 ```ts
 // domain/errors.ts - the exhaustive business vocabulary.
 import type { EmailError } from "./email.js";
-import type { Cents, OrderId } from "./brand.js";
+import type { Cents, OrderId, UserId } from "./brand.js";
 
 export type DomainError =
   | { readonly kind: "InvalidEmail"; readonly error: EmailError }
@@ -967,9 +967,10 @@ Agrega contexto y logs solo en el borde, donde los leen los humanos.
 // shell/handler-helpers.ts - edge-only enrichment.
 import type { AppError } from "../app/errors.js";
 import { domainToMessage, domainToStatus } from "../domain/status.js";
+import type { HttpStatus } from "../domain/status.js";
 
 export interface ErrorReport {
-  readonly status: number;
+  readonly status: HttpStatus;
   readonly body: { readonly error: string };
 }
 
@@ -1343,7 +1344,8 @@ export class PostgresOrderRepository implements OrderRepository {
   ) {}
   async find(orderId: OrderId): Promise<Result<OrderSnapshot, AppError>> {
     try {
-      const _ = (orderId, this.pool);
+      void orderId;
+      void this.pool;
       // Trimmed example: the refund DTO carries no userId, so the miss reuses the request identity.
       // Real schemas look up by userId and construct UserNotFound without casts.
       return err({
@@ -1420,20 +1422,20 @@ export function createRefundHandler(deps: AppDeps): Hono {
         error: { kind: "InvalidOrderId" },
       };
       const report = reportAppError(appError, console);
-      return c.json(report.body, report.status as 400 | 404 | 422 | 500);
+      return c.json(report.body, report.status);
     }
 
     // 2. Load persisted state through the port. Never fabricate Order from request amount.
     const found = await deps.repo.find(orderId.value);
     if (!found.ok) {
       const report = reportAppError(found.error, console);
-      return c.json(report.body, report.status as 400 | 404 | 422 | 500);
+      return c.json(report.body, report.status);
     }
     const order = found.value;
     const refund = calculateRefund(order, amount.value, deps.policy);
     if (!refund.ok) {
       const report = reportAppError({ kind: "Domain", error: refund.error }, console);
-      return c.json(report.body, report.status as 400 | 404 | 422 | 500);
+      return c.json(report.body, report.status);
     }
 
     // 3. Map to transport. No business logic here. Email was proven at the boundary and travels in OrderSnapshot.
