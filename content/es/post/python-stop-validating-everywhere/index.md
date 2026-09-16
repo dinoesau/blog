@@ -56,6 +56,14 @@ dependencies = ["fastapi>=0.110", "pydantic>=2"]
 
 [project.optional-dependencies]
 test = ["hypothesis>=6", "pytest>=8"]
+lint = ["mypy>=1", "ruff>=0.1"]
+
+[tool.mypy]
+strict = true
+
+[tool.ruff.lint]
+# SLF flags email._value access outside the defining module.
+select = ["SLF"]
 ```
 
 ---
@@ -463,6 +471,50 @@ En Python, cualquier módulo puede escribir `Email(_value="garbage")`.
 La inforjabilidad aquí es disciplinaria, no física.
 Sosténla con tres reglas: mantén la construcción directa dentro del módulo que define el tipo, prohíbela fuera por review y lint, y nunca reexportes el campo crudo como API pública.
 Revisa cada construcción directa como una invocación `sudo`.
+
+### Secret value objects: redacción de PII por tipo, no por disciplina
+
+`Email.__str__` devuelve la dirección cruda, así que cada `print(f"sending to {email}")` es una fuga de PII que ejecuta.
+Redactar por comentario no sobrevive al próximo contribuidor.
+Envuelve la PII en la frontera en un tipo cuyo render por defecto está redactado.
+
+```python
+@dataclass(frozen=True, slots=True)
+class CustomerEmail:
+    """PII wrapper. Redacted by default; raw only via the hatch."""
+
+    _inner: Email
+
+    def __str__(self) -> str:
+        return "[redacted]"
+
+    def __repr__(self) -> str:
+        return "CustomerEmail([redacted])"
+
+    def expose_for_sending(self) -> str:
+        return self._inner._value
+
+    def redacted(self) -> str:
+        return "[redacted]"
+```
+
+`f"{email}"` sigue mostrando la dirección cruda para contextos sin PII como recibos.
+`f"{customer}"`, `str(customer)` y `repr(customer)` muestran `[redacted]`.
+El logging solo puede imprimir la forma redactada salvo que el call site pida explícitamente `expose_for_sending()`.
+
+Para valores como passwords y tokens, usa el `SecretStr` que ya trae el sketch de arriba: no se necesita dependencia nueva.
+
+```python
+from pydantic import SecretStr
+
+
+def hash_password(raw: SecretStr) -> str:
+    # str(raw) and repr(raw) render **********; only this hatch sees the secret.
+    return do_hash(raw.get_secret_value())
+```
+
+Mantén `Email` para validación de forma y `CustomerEmail` para manejo de PII.
+Parsea una vez a `Email`, envuelve una vez en `CustomerEmail`, y deja que el default redactado proteja el log accidental.
 
 ---
 
@@ -1359,7 +1411,7 @@ async def refund_handler(
     )
 ```
 
-Notas de producción: exige `Idempotency-Key` en POST /refund con dedup. Emite `refund_total{kind}` e histograma. Loguea con `request_id` y `order_id`, nunca email crudo. Mantén `calculate_refund` sync y rápido o en executor.
+Notas de producción: exige `Idempotency-Key` en POST /refund con dedup. Emite `refund_total{kind}` e histograma. Loguea con `request_id` y `order_id`, nunca email crudo: `CustomerEmail.__str__` devuelve `[redacted]` por diseño, y `expose_for_sending()` se reserva para la frontera de envío. Mantén `calculate_refund` sync y rápido o en executor.
 El testing se separa limpiamente.
 Haz unit tests a `calculate_refund` con structs planos y sin mocks: es síncrono y determinista.
 Haz tests de integración al handler con un `InMemoryOrderRepository` vía `dependency_overrides` y payloads JSON reales sobre HTTP: JSON malformado, email inválido, monto negativo y doble refund, cada uno afirmando su status code.
@@ -1383,6 +1435,8 @@ El núcleo se mantiene rápido porque los efectos viven solo en el shell.
 | Costo en hot path | `model_validate` repetido en handler, servicio y repo para el mismo valor | Parsea una vez en el borde, propaga value objects con `slots` sin revalidar | Prueba sin impuesto de rendimiento, ideal para routers y workers |
 | Testing | Casos unitarios a mano con pocas cadenas literales | Hypothesis con cientos de entradas Unicode y adversariales más shrinking y `@example` | Confianza matemática en parsers, reproductores mínimos al fallar |
 | Arquitectura | Handlers mezclan parseo Pydantic, llamadas a BD y reglas de negocio con `async` en todas partes | Núcleo puro síncrono con `calculate_refund` más shell delgado async de FastAPI tras un puerto de protocolo `OrderRepository` | El núcleo es trivialmente testeable y portable, los efectos están aislados tras adaptadores intercambiables |
+| Secretos | `Email.__str__` logueado vía f-string por disciplina | `CustomerEmail` redactado por defecto más `SecretStr` para tokens | Los logs de PII se vuelven `[redacted]` salvo que el escape se llame explícitamente |
+| Lints | "Nunca construir directo" impuesto por comentarios de review | `mypy --strict` más `ruff select SLF` marcando acceso a `._value` | La disciplina se vuelve fallos del verificador, backdoors al campo crudo marcados |
 
 Guarda esta tabla como checklist de review.
 Si una fila deriva a la izquierda, devuelve la prueba al tipo.
@@ -1419,6 +1473,23 @@ Deja de defender cada función contra datos que ya comprobaste.
 Pruébalo una vez, codifícalo en un tipo, y deja que el verificador monte guardia mientras modelas el dominio.
 Este post es parte de la serie Error Handling.
 Continúa con [Deja de Validar en Todas Partes: Guía Arquitectónica de Manejo de Errores, Invariantes y Modelado Funcional del Dominio en TypeScript]({{< relref "/post/typescript-stop-validating-everywhere" >}}) y [Deja de Validar en Todas Partes: Guía Arquitectónica de Manejo de Errores, Invariantes y Modelado Funcional del Dominio en Rust]({{< relref "/post/rust-stop-validating-everywhere" >}}).
+
+---
+
+## Apéndice A: Lints del Verificador como Invariantes
+
+La regla 5 dice empujar invariantes al verificador, pero el type-state más `assert_never` son las únicas invariantes verificadas por máquina en esta guía.
+La invariante más barata es un bloque de lints concreto en el sketch de arriba: `mypy --strict` más `ruff select SLF`.
+`mypy --strict` rechaza transiciones de etapa incorrectas como `pay_order(draft)` en tiempo de chequeo.
+`ruff` SLF marca el acceso a `email._value` fuera del módulo que lo define, que es exactamente el backdoor en que se apoya la construcción directa.
+
+Acota la estrictura donde vive el narrowing.
+Los ejemplos de esta guía usan `assert isinstance(cap, Ok)` para estrechar `Result` tras parsear.
+Mantén esos asserts en la frontera y nunca los uses para enmascarar un resultado de dominio que debería ser `Err`.
+
+Dos reglas más completan el bloque.
+Mantén la construcción directa dentro del módulo que define el tipo para que los reviewers auditen cada acuñación en un solo lugar.
+Y nunca interpoles el campo crudo en logs: loguea `CustomerEmail` (redactado por defecto) solo con spans `request_id`/`order_id`.
 
 ---
 

@@ -56,6 +56,14 @@ dependencies = ["fastapi>=0.110", "pydantic>=2"]
 
 [project.optional-dependencies]
 test = ["hypothesis>=6", "pytest>=8"]
+lint = ["mypy>=1", "ruff>=0.1"]
+
+[tool.mypy]
+strict = true
+
+[tool.ruff.lint]
+# SLF flags email._value access outside the defining module.
+select = ["SLF"]
 ```
 
 ---
@@ -464,6 +472,50 @@ In Python, any module can write `Email(_value="garbage")`.
 Unforgeability here is disciplinary, not physical.
 Sustain it with three rules: keep direct construction inside the defining module, forbid it elsewhere by review and lint, and never re-export the raw field name as public API.
 Review every direct construction like a `sudo` invocation.
+
+### Secret value objects: PII redaction by type, not by discipline
+
+`Email.__str__` returns the raw address, so every `print(f"sending to {email}")` is a PII leak that runs.
+Redaction by comment does not survive the next contributor.
+Wrap PII at the boundary in a type whose default rendering is redacted.
+
+```python
+@dataclass(frozen=True, slots=True)
+class CustomerEmail:
+    """PII wrapper. Redacted by default; raw only via the hatch."""
+
+    _inner: Email
+
+    def __str__(self) -> str:
+        return "[redacted]"
+
+    def __repr__(self) -> str:
+        return "CustomerEmail([redacted])"
+
+    def expose_for_sending(self) -> str:
+        return self._inner._value
+
+    def redacted(self) -> str:
+        return "[redacted]"
+```
+
+`f"{email}"` still renders the raw address for non-PII contexts like receipts.
+`f"{customer}"`, `str(customer)`, and `repr(customer)` all render `[redacted]`.
+Logging can only print the redacted form unless the call site explicitly asks for `expose_for_sending()`.
+
+For password- and token-like values, use the `SecretStr` already in the sketch above: no new dependency is needed.
+
+```python
+from pydantic import SecretStr
+
+
+def hash_password(raw: SecretStr) -> str:
+    # str(raw) and repr(raw) render **********; only this hatch sees the secret.
+    return do_hash(raw.get_secret_value())
+```
+
+Keep `Email` for shape validation and `CustomerEmail` for PII handling.
+Parse once into `Email`, wrap once into `CustomerEmail`, and let the redacted default protect the accidental log.
 
 ---
 
@@ -1363,7 +1415,7 @@ async def refund_handler(
     )
 ```
 
-Production notes: require `Idempotency-Key` on POST /refund with dedup so retries never double-charge. Emit `refund_total{kind}` counter and latency histogram. Log with `request_id` and `order_id`, never raw email. Keep `calculate_refund` sync and fast or run it in an executor; never block the loop.
+Production notes: require `Idempotency-Key` on POST /refund with dedup so retries never double-charge. Emit `refund_total{kind}` counter and latency histogram. Log with `request_id` and `order_id`, never raw email: `CustomerEmail.__str__` returns `[redacted]` by design, and `expose_for_sending()` is reserved for the send boundary. Keep `calculate_refund` sync and fast or run it in an executor; never block the loop.
 Testing splits cleanly.
 Unit test `calculate_refund` with plain structs and no mocks: it is sync and deterministic.
 Integration test the handler with an `InMemoryOrderRepository` via `dependency_overrides` and real JSON payloads over HTTP: malformed JSON, bad email, negative amount, and double refund each assert their status code.
@@ -1387,6 +1439,8 @@ The core stays fast because effects live only in the shell.
 | Hot-path cost | `model_validate` repeated in handler, service, and repo for the same value | Parse once at the edge, thread `slots` value objects with no revalidation | Proof without performance tax, ideal for routers and workers |
 | Testing | Hand-picked unit cases with a few literal strings | Hypothesis with hundreds of Unicode and adversarial inputs plus shrinking and `@example` | Mathematical confidence in parsers, minimal reproducers on failure |
 | Architecture | Handlers mix Pydantic parsing, DB calls, and business rules with `async` everywhere | Pure sync core with `calculate_refund` plus thin async FastAPI shell behind an `OrderRepository` protocol port | Core is trivially testable and portable, effects are isolated behind swappable adapters |
+| Secrets | `Email.__str__` logged via f-string by discipline | `CustomerEmail` redacted by default plus `SecretStr` for tokens | PII logs become `[redacted]` unless the hatch is called explicitly |
+| Lints | "Never construct directly" enforced by review comments | `mypy --strict` plus `ruff select SLF` flagging `._value` access | Discipline becomes checker failures, raw-field backdoors flagged |
 
 Keep this table as a review checklist.
 If a row drifts left, push the proof back into the type.
@@ -1423,6 +1477,23 @@ Stop defending every function against data you already checked.
 Prove it once, encode it in a type, and let the checker stand guard while you model the domain.
 This post is part of the Error Handling series.
 Continue with [Stop Validating Everywhere: An Architectural Guide to Error Handling, Invariants, and Functional Domain Modeling in TypeScript]({{< relref "/post/typescript-stop-validating-everywhere" >}}) and [Stop Validating Everywhere: An Architectural Guide to Error Handling, Invariants, and Functional Domain Modeling in Rust]({{< relref "/post/rust-stop-validating-everywhere" >}}).
+
+---
+
+## Appendix A: Checker Lints as Invariants
+
+Rule 5 says to push invariants into the checker, but type-state plus `assert_never` are the only machine-checked invariants in this guide.
+The cheapest invariant is a concrete lint block in the sketch above: `mypy --strict` plus `ruff select SLF`.
+`mypy --strict` rejects wrong-stage transitions such as `pay_order(draft)` at check time.
+`ruff` SLF flags `email._value` access outside the defining module, which is exactly the backdoor that direct construction relies on.
+
+Scope the strictness where narrowing lives.
+The examples in this guide use `assert isinstance(cap, Ok)` to narrow `Result` after parsing.
+Keep those asserts at the boundary and never use them to mask a domain outcome that should be an `Err`.
+
+Two more rules complete the block.
+Keep direct construction inside the defining module so reviewers can audit every mint in one place.
+And never interpolate the raw field in logs: log `CustomerEmail` (redacted by default) with `request_id`/`order_id` spans only.
 
 ---
 

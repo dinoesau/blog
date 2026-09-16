@@ -48,7 +48,7 @@ Usa el patrón type-state, brands de costo cero en runtime y un núcleo funciona
 // package.json sketch con versiones fijas.
 {
   "dependencies": { "hono": "^4", "zod": "^3", "ts-pattern": "^5" },
-  "devDependencies": { "fast-check": "^3", "vitest": "^2", "typescript": "^5" }
+  "devDependencies": { "fast-check": "^3", "vitest": "^2", "typescript": "^5", "eslint": "^9", "typescript-eslint": "^8" }
 }
 ```
 
@@ -516,6 +516,50 @@ En TypeScript, el brand se borra en runtime y cualquier módulo puede escribir `
 La infalsificabilidad aquí es disciplinaria, no física.
 Sostenla con tres reglas: conserva el cast `as` solo dentro del módulo del smart constructor, prohíbe `as` fuera con `no-restricted-syntax` para `TSAsExpression` con allowlist en `domain/*`, y reexporta el tipo opaco sin reexportar la clave del brand.
 Revisa cada `as` nuevo como una invocación a `sudo`.
+
+### Secret types: redacción de PII por tipo, no por disciplina
+
+`Email` es un `string` en runtime, así que cada template literal sobre él es una fuga de PII que compila.
+Redactar por comentario no sobrevive al próximo contribuidor.
+Envuelve la PII en la frontera en una clase opaca sin coerción a string.
+
+```ts
+// domain/customer-email.ts - the only module allowed to mint CustomerEmail.
+import type { Email } from "./brand.js";
+import { emailToString } from "./email.js";
+
+export class CustomerEmail {
+  readonly #inner: string;
+  private constructor(inner: string) {
+    this.#inner = inner;
+  }
+  static fromEmail(email: Email): CustomerEmail {
+    return new CustomerEmail(emailToString(email));
+  }
+  // No implicit conversion to string. Only explicit escape hatches:
+  exposeForSending(): string {
+    return this.#inner;
+  }
+  redacted(): "[redacted]" {
+    return "[redacted]";
+  }
+  toString(): string {
+    return "[redacted]";
+  }
+  toJSON(): string {
+    return "[redacted]";
+  }
+}
+```
+
+Un template literal sobre `Email` sigue mostrando la dirección cruda para contextos sin PII como recibos.
+El mismo template sobre `CustomerEmail`, más `JSON.stringify` y `toString`, muestran `[redacted]`.
+Pasar un `CustomerEmail` donde se espera un `string` falla con `TS2345`.
+El logging solo puede imprimir la forma redactada salvo que el call site pida explícitamente `exposeForSending()`.
+
+Mantén `Brand<string, "Email">` para validación de forma en hot paths porque cuesta cero en runtime.
+Usa `CustomerEmail` para manejo de PII en la frontera de logging y envío.
+Parsea una vez a `Email`, envuelve una vez en `CustomerEmail`, y deja que el verificador rechace la fuga accidental.
 
 ---
 
@@ -1451,7 +1495,7 @@ Los tests pasan un `InMemoryOrderRepository` en vez de Postgres, así no necesit
 La misma forma funciona en Fastify: `request.body` ya viene parseado (síncrono, no promesa como `c.req.json()`), y `c.json()` se vuelve `reply.code().send()`.
 El núcleo no cambia porque jamás importó el framework.
 
-Notas de producción: exige `Idempotency-Key` en POST /refund con dedup por key para que reintentos legítimos no reciban 422 dos veces. Emite contador `refund_total{kind}` e histograma de latencia. Loguea con `request_id` y `order_id`, nunca email crudo. Mantén `calculateRefund` sync y rápido o muévelo a worker.
+Notas de producción: exige `Idempotency-Key` en POST /refund con dedup por key para que reintentos legítimos no reciban 422 dos veces. Emite contador `refund_total{kind}` e histograma de latencia. Loguea con `request_id` y `order_id`, nunca email crudo: `CustomerEmail` muestra `[redacted]` por diseño, y `exposeForSending()` se reserva para la frontera de envío. Mantén `calculateRefund` sync y rápido o muévelo a worker.
 El testing se separa con limpieza.
 Prueba `calculateRefund` en unit con structs planos y sin mocks: es síncrono y determinista.
 Prueba el handler en integración con un `InMemoryOrderRepository` y payloads JSON reales por HTTP: JSON malformado, email malo, monto negativo y doble reembolso, cada uno con su status esperado.
@@ -1475,6 +1519,8 @@ El núcleo se mantiene rápido porque los efectos viven solo en el shell.
 | Costo en hot path | `safeParse` repetido en handler, servicio y repo para el mismo valor | Parseo único en el borde, brands de costo cero para la prueba; construir `Order` con `Symbol` sí asigna, mantenlo fuera del hot path | Prueba sin revalidación, ideal para validadores y routers |
 | Testing | Casos unitarios a mano con pocos strings literales | `fast-check` con cientos de entradas Unicode y adversariales más shrinking y semillas | Confianza matemática en parsers, reproductores mínimos al fallar |
 | Arquitectura | Handlers que mezclan parseo Zod, llamadas a BD y reglas con `async` por todas partes | Núcleo síncrono puro con `calculateRefund` más shell delgado async de Hono tras un puerto de interfaz `OrderRepository` | Núcleo trivialmente testeable y portable, efectos aislados tras adaptadores intercambiables |
+| Secretos | `Email` con brand interpolado en template literals por disciplina | Clase opaca `CustomerEmail` redactada por defecto, sin coerción a string | Las fugas de PII se vuelven errores `TS2345`, `JSON.stringify` queda redactado |
+| Lints | Non-null assertions y casts `as` sueltos sin chequear | `no-non-null-assertion` más `no-restricted-syntax` para `TSAsExpression` | Los equivalentes a unwrap se vuelven errores de lint, la forja queda confinada a `domain/*` |
 
 Conserva esta tabla como checklist de review.
 Si una fila deriva a la izquierda, devuelve la prueba al tipo.
@@ -1511,6 +1557,36 @@ Deja de defender cada función contra datos que ya comprobaste.
 Demuéstralo una vez, codifícalo en un tipo y deja que el compilador monte guardia mientras modelas el dominio.
 Este post es parte de la serie Error Handling.
 Continúa con [Deja de Validar en Todas Partes: Una Guía Arquitectónica para el Manejo de Errores en Python]({{< relref "/post/python-stop-validating-everywhere" >}}) y [Deja de Validar en Todas Partes: Guía Arquitectónica de Manejo de Errores, Invariantes y Modelado Funcional del Dominio en Rust]({{< relref "/post/rust-stop-validating-everywhere" >}}).
+
+---
+
+## Apéndice A: Lints del Compilador como Invariantes
+
+La regla 5 dice llevar invariantes al compilador, pero el type-state más `assertNever` son las únicas invariantes verificadas por máquina en esta guía.
+La invariante más barata es un bloque de lints concreto: el sketch de `tsconfig` de arriba más un sketch de `eslint.config.mjs`.
+
+```js
+// eslint.config.mjs sketch. Extends the no-restricted-syntax rule for `as` from Pillar 1.
+import tseslint from "typescript-eslint";
+
+export default tseslint.config(
+  ...tseslint.configs.strict,
+  { rules: { "@typescript-eslint/no-non-null-assertion": "error" } },
+);
+```
+
+`no-non-null-assertion` es el `unwrap_used` de TypeScript.
+Convierte el crash de `maybe!` en error de lint y obliga a narrowing explícito.
+La regla `no-restricted-syntax` del Pilar 1 sobre `TSAsExpression` confina el cast `as` a `domain/*`, que es exactamente donde `parseEmail` acuña brands.
+Junto con `strict` más `noUncheckedIndexedAccess`, las tres reglas vuelven la disciplina verificable por máquina.
+
+Acota la estrictura donde viven los tests.
+Los ejemplos de esta guía usan `!` y `as` en puntos estrechos y revisados como fixtures y fakes en memoria.
+Permítelos ahí con disables por archivo y en ningún otro lado.
+
+Dos reglas más completan el bloque.
+Mantén cada `as` dentro del módulo del smart constructor para que los reviewers auditen cada acuñación en un solo lugar.
+Y nunca loguees el brand crudo: loguea `CustomerEmail` (redactado por defecto) solo con spans `request_id`/`order_id`.
 
 ---
 
