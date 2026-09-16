@@ -532,10 +532,10 @@ pub struct CardDetails {
 }
 
 impl CardDetails {
-    pub fn parse(last_four: &str) -> Result<Self, &'static str> {
+    pub fn parse(last_four: &str) -> Result<Self, LastFourError> {
         let t = last_four.trim();
         if t.len() != 4 || !t.chars().all(|c| c.is_ascii_digit()) {
-            return Err("last_four must be 4 digits");
+            return Err(LastFourError::Invalid);
         }
         Ok(Self { last_four: t.to_string() })
     }
@@ -546,19 +546,57 @@ impl CardDetails {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LastFourError {
+    Invalid,
+}
+
+impl std::fmt::Display for LastFourError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Invalid => write!(f, "last_four must be 4 digits"),
+        }
+    }
+}
+
+impl std::error::Error for LastFourError {}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransferDetails {
     iban: String,
 }
 
 impl TransferDetails {
-    pub fn parse(iban: &str) -> Result<Self, &'static str> {
+    pub fn parse(iban: &str) -> Result<Self, IbanError> {
         let t = iban.trim();
-        if t.is_empty() || t.len() > 34 {
-            return Err("iban must be 1-34 chars");
+        let mut chars = t.chars();
+        let ok_head = chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+            && chars.next().is_some_and(|c| c.is_ascii_alphabetic());
+        let ok_tail = t.bytes().all(|b| b.is_ascii_alphanumeric());
+        if !(15..=34).contains(&t.chars().count()) || !ok_head || !ok_tail {
+            return Err(IbanError::Invalid);
         }
         Ok(Self { iban: t.to_string() })
     }
+
+    pub fn as_str(&self) -> &str {
+        &self.iban
+    }
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IbanError {
+    Invalid,
+}
+
+impl std::fmt::Display for IbanError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Invalid => write!(f, "iban must be 15-34 chars, starting with two letters"),
+        }
+    }
+}
+
+impl std::error::Error for IbanError {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PaymentMethod {
