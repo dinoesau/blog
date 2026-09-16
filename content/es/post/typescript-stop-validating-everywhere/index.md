@@ -1043,6 +1043,75 @@ Ejecuta con `vitest run` y conserva la semilla que falla.
 Registra esa semilla como prueba de regresión.
 Tu parser gana robustez matemática en vez de cobertura anecdótica: las formas válidas siempre pasan, las inválidas siempre fallan, el Unicode hostil jamás lanza y la normalización hace round-trip.
 
+### Wrappers secretos: los brands no pueden redactar, las clases opacas sí
+
+Un brand sigue siendo un `string` en runtime: `` `sending to ${email}` ``, `console.log` y `JSON.stringify` filtran por construcción.
+Donde el valor sea sensible, paga una clase opaca con campo verdaderamente privado y formateo redactado:
+
+```ts
+// domain/customer-email.ts - el único módulo autorizado para acuñar CustomerEmail.
+export class CustomerEmail {
+  readonly #inner: string;
+
+  private constructor(inner: string) {
+    this.#inner = inner;
+  }
+
+  static parse(raw: unknown): CustomerEmail | null {
+    if (typeof raw !== "string" || !raw.includes("@")) {
+      return null;
+    }
+    return new CustomerEmail(raw.trim());
+  }
+
+  /** Válvula de escape explícita solo para el borde de envío. */
+  exposeForSending(): string {
+    return this.#inner;
+  }
+
+  redacted(): "[redacted]" {
+    return "[redacted]";
+  }
+
+  toString(): "[redacted]" {
+    return "[redacted]";
+  }
+
+  toJSON(): "[redacted]" {
+    return "[redacted]";
+  }
+}
+```
+
+El trade-off es explícito: los brands siguen siendo de costo cero para valores ordinarios, mientras la PII paga una asignación por redactar por defecto.
+Conserva el brand para pruebas de forma, usa la clase donde un template literal filtrado sería un incidente.
+
+### Reglas ESLint como invariantes
+
+TypeScript no tiene `#![deny(...)]`, pero una configuración estricta de ESLint es la misma idea: la invariante más barata.
+Fija las reglas que custodian las fronteras de esta guía:
+
+```js
+// eslint.config.mjs
+export default [
+  {
+    rules: {
+      // El único `as` autorizado vive en el módulo del smart constructor.
+      "@typescript-eslint/consistent-type-assertions": ["error", { assertionStyle: "never" }],
+      // Lo más cercano a #[must_use]: nunca ignorar una promesa.
+      "@typescript-eslint/no-floating-promises": "error",
+      "@typescript-eslint/no-unused-expressions": "error",
+      // Los logs pertenecen al logger del shell, nunca a console.
+      "no-console": "error",
+    },
+  },
+];
+```
+
+Un hueco sin equivalente: `#[must_use]` para valores síncronos.
+`no-unused-expressions` no marca una llamada descartada a `parseEmail(...)`, así que un `Result` ignorado sigue siendo un catch de review en TypeScript.
+Combínalo con `strict` más `noUncheckedIndexedAccess` para que los casos borde sigan siendo obligaciones en compilación en vez de incidentes en producción.
+
 ---
 
 ## 9. Patrón de Arquitectura: Functional Core, Imperative Shell (Hono/Fastify y Zod)
@@ -1190,6 +1259,8 @@ El núcleo se mantiene rápido porque los efectos viven solo en el shell.
 | Workflow state | Banderas como `isPaid` comprobadas con `if` antes de cada acción | Type-state `Order<Draft>` a `Order<Paid>` con genéricos marcados por etapa | Las transiciones ilegales no compilan, los métodos por etapa desaparecen por tipo |
 | Costo en hot path | `safeParse` repetido en handler, servicio y repo para el mismo valor | Parseo único en el borde, brands de costo cero sin asignación | Prueba sin impuesto de rendimiento, ideal para validadores y routers |
 | Testing | Casos unitarios a mano con pocos strings literales | `fast-check` con cientos de entradas Unicode y adversariales más shrinking y semillas | Confianza matemática en parsers, reproductores mínimos al fallar |
+| Redacción de secretos | Strings con PII con brand, redacción por comentario | Clase opaca `CustomerEmail` con `#inner` más `toString`/`toJSON` redactados, con `exposeForSending()` explícito | Los logs redactan por defecto, enviar exige la válvula explícita |
+| Lints del toolchain | "`as` único autorizado, sin `console`" como comentarios | `consistent-type-assertions: never` más `no-floating-promises` y `no-console` | La disciplina se vuelve un fallo de lint, el review queda para `Result`s ignorados |
 | Arquitectura | Handlers que mezclan parseo Zod, llamadas a BD y reglas con `async` por todas partes | Núcleo síncrono puro con `calculateRefund` más shell delgado async de Hono y Zod | Núcleo trivialmente testeable y portable, efectos aislados y auditables |
 
 Conserva esta tabla como checklist de review.
@@ -1221,6 +1292,8 @@ Nunca filtres `unknown` ni `string` lanzados desde APIs de dominio, y nunca deje
 **5. Empuja los flujos y los costos al sistema de tipos.**
 Usa type-state con genéricos por etapa para ciclos ordenados con dos o más operaciones distintas.
 Usa brands de costo cero en hot paths en vez de objetos envoltorio.
+Envuelve valores sensibles en la clase opaca `CustomerEmail` con formateo redactado.
+Refuerza la disciplina con `consistent-type-assertions: never`, `no-floating-promises` y `no-console`.
 Cubre los parsers con `fast-check` y mantén el shell de Hono o Fastify delgado alrededor de un núcleo funcional puro.
 
 Deja de defender cada función contra datos que ya comprobaste.

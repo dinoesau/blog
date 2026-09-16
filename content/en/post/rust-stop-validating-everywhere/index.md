@@ -917,6 +917,96 @@ If a case fails, `proptest` shrinks it to the minimal reproducer and saves the s
 Add that seed as a regression test.
 Your parser gains mathematical robustness instead of anecdotal coverage.
 
+### Secret newtypes: PII redaction by type, not by discipline
+
+`Email` proves shape, but it still prints like a `String`: it implements `Display` and `AsRef<str>`, and derives `Debug`.
+Any `tracing::error!(email = %email, ...)` compiles and leaks PII.
+That is a social contract, and this guide prefers compiler contracts.
+
+Keep `Email` for shape validation, and wrap it once more where the value is sensitive:
+
+```rust
+// src/domain/secrets.rs
+use secrecy::{ExposeSecret, SecretString};
+
+/// Customer email with no formatting traits on purpose:
+/// no Display, no AsRef<str>, no Debug.
+/// The only ways out are explicit.
+pub struct CustomerEmail(Email);
+
+impl CustomerEmail {
+    pub fn new(email: Email) -> Self {
+        Self(email)
+    }
+
+    /// Explicit escape hatch for the sending edge only.
+    pub fn expose_for_sending(&self) -> &str {
+        self.0.as_str()
+    }
+
+    pub fn redacted(&self) -> &'static str {
+        "[redacted]"
+    }
+}
+```
+
+For password- or token-like values, use `secrecy` directly.
+`SecretString` redacts `Debug` output and wipes memory on drop, so a thin wrapper needs no derives:
+
+```rust
+use secrecy::{ExposeSecret, SecretString};
+
+pub struct PlainPassword(SecretString);
+
+impl PlainPassword {
+    pub fn new(raw: String) -> Self {
+        Self(SecretString::new(raw.into()))
+    }
+
+    pub fn expose(&self) -> &str {
+        self.0.expose_secret()
+    }
+}
+```
+
+```toml
+# Cargo.toml
+[dependencies]
+secrecy = "0.8"
+# Needed when you own raw secret buffers and derive Zeroize on them.
+zeroize = { version = "1", features = ["derive", "alloc"] }
+```
+
+Three rules keep the boundary honest.
+Derive or implement `Display`, `AsRef<str>`, `Debug`, and `Serialize` deliberately per type, never by habit.
+Never implement `Deref<Target = str>` for newtypes: it silently re-exposes the whole `&str` API and weakens the boundary without any call-site change.
+Log only opaque identifiers (`user_id`, `order_id`) from the shell; a `CustomerEmail` passed to a `%`/`?` logging sink no longer compiles.
+
+### Compiler lints as invariants
+
+The lint header is the cheapest invariant in this guide.
+It turns "production code returns `Result`, never `unwrap`" from a comment into a build failure:
+
+```rust
+// src/lib.rs
+#![forbid(unsafe_code)]
+#![deny(missing_docs)]
+#![deny(clippy::unwrap_used, clippy::expect_used)]
+#![deny(clippy::panic)]
+```
+
+Mark proof-carrying accessors so discarded results fail the build too:
+
+```rust
+#[must_use]
+pub fn value(self) -> u64 {
+    self.0
+}
+```
+
+Adopt it incrementally: existing `.unwrap()`/`.expect()` in tests and sketches must become `?` propagation or explicit `match` first, or the new header fails the build on purpose.
+That is the point: the compiler, not review, guards the rule.
+
 ---
 
 ## 9. Architecture Pattern: Functional Core, Imperative Shell (Axum and Serde)
@@ -1055,6 +1145,10 @@ impl IntoResponse for AppError {
 }
 ```
 
+Log only opaque identifiers (`user_id`, `order_id`) from this mapping.
+With `CustomerEmail` in place, `tracing::error!(email = %email, ...)` no longer compiles: there is no `Display` to format.
+The shell keeps the address behind `expose_for_sending()` at the sending edge only.
+
 Testing splits cleanly.
 Unit test `calculate_refund` with plain structs and no mocks.
 Integration test the handler with `tower::ServiceExt::oneshot` and real JSON payloads.
@@ -1075,6 +1169,8 @@ The core stays fast and deterministic because effects live only in the shell.
 | Workflow state | Boolean flags like `is_paid` checked with `if` before each action | Type-state `Order<Draft>` to `Order<Paid>` with move semantics | Illegal transitions do not compile, stale handles are destroyed by ownership |
 | Hot-path cost | Cloned `String` newtypes allocated on every layer | Borrowed `EmailRef<'a>` with zero heap allocation, promote to owned once | Proof without performance tax, ideal for routers and parsers |
 | Testing | Hand-picked `#[test]` cases with a few literal strings | `proptest` with thousands of Unicode and adversarial inputs plus shrinking | Mathematical confidence in parsers, minimal reproducers on failure |
+| Secret redaction | `Display` and `Debug` on PII newtypes, redaction by comment | `CustomerEmail` with no formatting traits plus `SecretString`, explicit `expose_for_sending()` | Leaked addresses become compile errors instead of review findings |
+| Compiler lints | "Never `unwrap` in production" as a comment | `#![deny(clippy::unwrap_used, clippy::expect_used)]` plus `#[must_use]` on accessors | Discipline becomes a build failure, review stays for business rules |
 | Architecture | Handlers mix Serde parsing, DB calls, and business rules with `async` everywhere | Pure sync core with `calculate_refund` plus thin async Axum and Serde shell | Core is trivially testable and portable, effects are isolated and auditable |
 
 Keep this table as a review checklist.
@@ -1105,6 +1201,8 @@ Never leak `anyhow` or `String` errors from domain APIs.
 **5. Push workflows and costs into the type system.**
 Use type-state with move semantics for ordered lifecycles.
 Use borrowed `EmailRef<'a>` views on hot paths.
+Wrap sensitive values in `CustomerEmail`/`SecretString` with no formatting traits.
+Enforce the discipline with a lint header (`deny(clippy::unwrap_used, clippy::expect_used)`) and `#[must_use]` accessors.
 Cover parsers with `proptest` and keep the Axum shell thin around a pure functional core.
 
 Stop defending every function against data you already checked.

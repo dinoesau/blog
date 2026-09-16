@@ -917,6 +917,96 @@ Si un caso falla, `proptest` lo reduce al reproductor mínimo y guarda el seed.
 Agrega ese seed como prueba de regresión.
 Tu parser gana robustez matemática en lugar de cobertura anecdótica.
 
+### Secret newtypes: redacción de PII por tipo, no por disciplina
+
+`Email` prueba la forma, pero aún imprime como un `String`: implementa `Display` y `AsRef<str>`, y deriva `Debug`.
+Cualquier `tracing::error!(email = %email, ...)` compila y filtra PII.
+Eso es un contrato social, y esta guía prefiere contratos del compilador.
+
+Conserva `Email` para validar la forma, y envuélvelo una vez más donde el valor sea sensible:
+
+```rust
+// src/domain/secrets.rs
+use secrecy::{ExposeSecret, SecretString};
+
+/// Email de cliente sin traits de formato a propósito:
+/// sin Display, sin AsRef<str>, sin Debug.
+/// Las únicas salidas son explícitas.
+pub struct CustomerEmail(Email);
+
+impl CustomerEmail {
+    pub fn new(email: Email) -> Self {
+        Self(email)
+    }
+
+    /// Válvula de escape explícita solo para el borde de envío.
+    pub fn expose_for_sending(&self) -> &str {
+        self.0.as_str()
+    }
+
+    pub fn redacted(&self) -> &'static str {
+        "[redacted]"
+    }
+}
+```
+
+Para valores como contraseñas o tokens, usa `secrecy` directamente.
+`SecretString` redacta la salida de `Debug` y limpia la memoria al liberarse, así que un wrapper delgado no necesita derives:
+
+```rust
+use secrecy::{ExposeSecret, SecretString};
+
+pub struct PlainPassword(SecretString);
+
+impl PlainPassword {
+    pub fn new(raw: String) -> Self {
+        Self(SecretString::new(raw.into()))
+    }
+
+    pub fn expose(&self) -> &str {
+        self.0.expose_secret()
+    }
+}
+```
+
+```toml
+# Cargo.toml
+[dependencies]
+secrecy = "0.8"
+# Necesario cuando posees buffers secretos crudos y derivas Zeroize sobre ellos.
+zeroize = { version = "1", features = ["derive", "alloc"] }
+```
+
+Tres reglas mantienen honesta la frontera.
+Deriva o implementa `Display`, `AsRef<str>`, `Debug` y `Serialize` deliberadamente por tipo, nunca por hábito.
+Nunca implementes `Deref<Target = str>` para newtypes: reexpone silenciosamente toda la API de `&str` y debilita la frontera sin ningún cambio en los call sites.
+Loguea solo identificadores opacos (`user_id`, `order_id`) desde el shell; un `CustomerEmail` pasado a un sink de logging `%`/`?` ya no compila.
+
+### Lints del compilador como invariantes
+
+El header de lints es la invariante más barata de esta guía.
+Convierte "el código de producción retorna `Result`, nunca `unwrap`" de un comentario en un fallo de compilación:
+
+```rust
+// src/lib.rs
+#![forbid(unsafe_code)]
+#![deny(missing_docs)]
+#![deny(clippy::unwrap_used, clippy::expect_used)]
+#![deny(clippy::panic)]
+```
+
+Marca los accesores que portan pruebas para que los resultados descartados también fallen en build:
+
+```rust
+#[must_use]
+pub fn value(self) -> u64 {
+    self.0
+}
+```
+
+Adóptalo de forma incremental: los `.unwrap()`/`.expect()` existentes en tests y sketches deben volverse propagación con `?` o `match` explícito primero, o el nuevo header fallará el build a propósito.
+Ese es el punto: el compilador, no el review, custodia la regla.
+
 ---
 
 ## 9. Patrón de Arquitectura: Núcleo Funcional, Shell Imperativo (Axum y Serde)
@@ -1055,6 +1145,10 @@ impl IntoResponse for AppError {
 }
 ```
 
+Loguea solo identificadores opacos (`user_id`, `order_id`) desde este mapeo.
+Con `CustomerEmail` en su lugar, `tracing::error!(email = %email, ...)` ya no compila: no hay `Display` que formatear.
+El shell mantiene la dirección detrás de `expose_for_sending()` solo en el borde de envío.
+
 El testing se divide limpiamente.
 Prueba unitaria de `calculate_refund` con structs planos y sin mocks.
 Prueba de integración del handler con `tower::ServiceExt::oneshot` y payloads JSON reales.
@@ -1075,6 +1169,8 @@ El núcleo queda rápido y determinista porque los efectos viven solo en el shel
 | Estado de flujo | Banderas como `is_paid` verificadas con `if` antes de cada acción | Type-state `Order<Draft>` a `Order<Paid>` con semántica de move | Las transiciones ilegales no compilan, los handles obsoletos se destruyen por ownership |
 | Costo en hot path | Newtypes `String` clonados y asignados en cada capa | `EmailRef<'a>` prestado sin heap, promoción a propio una vez | Prueba sin impuesto de rendimiento, ideal para routers y parsers |
 | Testing | Casos `#[test]` manuales con unos pocos strings literales | `proptest` con miles de entradas Unicode y adversariales más shrinking | Confianza matemática en parsers, reproductores mínimos al fallar |
+| Redacción de secretos | `Display` y `Debug` en newtypes con PII, redacción por comentario | `CustomerEmail` sin traits de formato más `SecretString`, con `expose_for_sending()` explícito | Las direcciones filtradas se vuelven errores de compilación en lugar de hallazgos de review |
+| Lints del compilador | "Nunca `unwrap` en producción" como comentario | `#![deny(clippy::unwrap_used, clippy::expect_used)]` más `#[must_use]` en accesores | La disciplina se vuelve un fallo de build, el review queda para reglas de negocio |
 | Arquitectura | Handlers que mezclan parsing Serde, DB y reglas con `async` en todas partes | Núcleo sync puro con `calculate_refund` más shell delgado Axum y Serde | Núcleo trivialmente testeable y portable, efectos aislados y auditables |
 
 Guarda esta tabla como checklist de revisión.
@@ -1105,6 +1201,8 @@ Nunca filtres `anyhow` o errores `String` desde APIs de dominio.
 **5. Lleva flujos y costos al sistema de tipos.**
 Usa type-state con semántica de move para ciclos ordenados.
 Usa vistas prestadas `EmailRef<'a>` en rutas calientes.
+Envuelve valores sensibles en `CustomerEmail`/`SecretString` sin traits de formato.
+Refuerza la disciplina con un header de lints (`deny(clippy::unwrap_used, clippy::expect_used)`) y accesores `#[must_use]`.
 Cubre parsers con `proptest` y mantén el shell Axum delgado alrededor de un núcleo funcional puro.
 
 Deja de defender cada función contra datos que ya verificaste.

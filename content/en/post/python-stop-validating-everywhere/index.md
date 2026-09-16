@@ -984,6 +984,62 @@ Hypothesis shrinks failures to the minimal reproducer and prints the seed.
 Check that seed in with `@example` as a regression test.
 Your parser gains mathematical robustness instead of anecdotal coverage: valid shapes always pass, invalid shapes always fail, hostile Unicode never raises, and normalization round-trips.
 
+### Secret wrappers: PII redaction by construction, not by comment
+
+`Email` proves shape, but `__str__` prints the raw address: any f-string, `str()`, or `logging` call leaks PII.
+Mirror the `Secret<T>` idea with Pydantic's `SecretStr` for passwords and tokens, plus a narrow wrapper for addresses:
+
+```python
+from dataclasses import dataclass
+
+from pydantic import SecretStr
+
+
+@dataclass(frozen=True, slots=True)
+class CustomerEmail:
+    """PII wrapper: no raw __str__, only an explicit escape hatch."""
+
+    _inner: str
+
+    def __repr__(self) -> str:
+        return "CustomerEmail('[redacted]')"
+
+    def expose_for_sending(self) -> str:
+        return self._inner
+
+    def redacted(self) -> str:
+        return "[redacted]"
+
+
+api_key = SecretStr("sk-live-123")
+assert "sk-live" not in repr(api_key)  # SecretStr('**********')
+assert api_key.get_secret_value() == "sk-live-123"
+```
+
+Two honest caveats, both weaker than Rust.
+Privacy is disciplinary: `_inner` is still reachable by convention, so keep construction inside the defining module and ban it elsewhere by review.
+And there is no memory wiping: CPython `str` is immutable and GC timing is undefined, so never promise a `ZeroizeOnDrop` equivalent.
+What the wrapper does guarantee is that default formatting and logs redact, and sending requires the explicit hatch.
+
+### Toolchain lints as invariants
+
+Python has no `#![deny(...)]`, but `mypy --strict` plus `ruff` is the same idea: the cheapest invariant.
+Pin them in `pyproject.toml` so the shell, not review, guards the rules:
+
+```toml
+[tool.mypy]
+strict = true
+
+[tool.ruff.lint]
+select = ["B", "S", "T"]
+```
+
+`mypy --strict` rejects untyped `def`s the way `deny(missing_docs)` rejects undocumented items.
+`ruff` rule `S101` bans `assert` for validation (asserts vanish under `python -O`), and `T201` bans `print` in library code in favor of the edge-owned logger.
+One gap with no equivalent: `#[must_use]`.
+Ruff does not flag a discarded `parse_email(...)` call, so a dropped `Result` stays a review catch in Python.
+Name it in review checklists instead of pretending the toolchain covers it.
+
 ---
 
 ## 9. Architecture Pattern: Functional Core, Imperative Shell (FastAPI and Pydantic)
@@ -1115,6 +1171,8 @@ The core stays fast because effects live only in the shell.
 | Workflow state | Boolean flags like `is_paid` checked with `if` before each action | Type-state `OrderState[Draft]` to `OrderState[Paid]` with stage generics | Illegal transitions are checker errors, stage-specific methods disappear by type |
 | Hot-path cost | `model_validate` repeated in handler, service, and repo for the same value | Parse once at the edge, thread `slots` value objects with no revalidation | Proof without performance tax, ideal for routers and workers |
 | Testing | Hand-picked unit cases with a few literal strings | Hypothesis with hundreds of Unicode and adversarial inputs plus shrinking and `@example` | Mathematical confidence in parsers, minimal reproducers on failure |
+| Secret redaction | `__str__` on PII value objects, redaction by comment | `CustomerEmail` with redacted `__repr__` plus `SecretStr`, explicit `expose_for_sending()` | Logs redact by default, sending requires the explicit hatch |
+| Toolchain lints | "No `assert` for validation, no `print` in libraries" as comments | `mypy --strict` plus `ruff` `S101`/`T201` pinned in `pyproject.toml` | Discipline becomes a check failure, review stays for dropped `Result`s |
 | Architecture | Handlers mix Pydantic parsing, DB calls, and business rules with `async` everywhere | Pure sync core with `calculate_refund` plus thin async FastAPI and Pydantic shell | Core is trivially testable and portable, effects are isolated and auditable |
 
 Keep this table as a review checklist.
@@ -1146,6 +1204,8 @@ Never leak bare `Exception` strings from domain APIs, and never let the domain i
 **5. Push workflows and costs into the type system.**
 Use type-state with stage generics for ordered lifecycles with two or more distinct operations.
 Use `slots` value objects on hot paths instead of repeated Pydantic parsing.
+Wrap sensitive values in `CustomerEmail`/`SecretStr` with redacted formatting.
+Enforce the discipline with `mypy --strict` plus `ruff` `S101`/`T201`.
 Cover parsers with Hypothesis and keep the FastAPI shell thin around a pure functional core.
 
 Stop defending every function against data you already checked.

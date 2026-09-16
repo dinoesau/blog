@@ -984,6 +984,62 @@ Hypothesis reduce los fallos al reproductor mínimo e imprime la semilla.
 Registra esa semilla con `@example` como regression test.
 Tu parser gana robustez matemática en lugar de cobertura anecdótica: las formas válidas siempre pasan, las inválidas siempre fallan, el Unicode hostil nunca lanza, y la normalización hace round-trip.
 
+### Wrappers secretos: redacción de PII por construcción, no por comentario
+
+`Email` prueba la forma, pero `__str__` imprime la dirección cruda: cualquier f-string, `str()` o llamada a `logging` filtra PII.
+Replica la idea de `Secret<T>` con `SecretStr` de Pydantic para contraseñas y tokens, más un wrapper estrecho para direcciones:
+
+```python
+from dataclasses import dataclass
+
+from pydantic import SecretStr
+
+
+@dataclass(frozen=True, slots=True)
+class CustomerEmail:
+    """Wrapper de PII: sin __str__ crudo, solo una válvula de escape explícita."""
+
+    _inner: str
+
+    def __repr__(self) -> str:
+        return "CustomerEmail('[redacted]')"
+
+    def expose_for_sending(self) -> str:
+        return self._inner
+
+    def redacted(self) -> str:
+        return "[redacted]"
+
+
+api_key = SecretStr("sk-live-123")
+assert "sk-live" not in repr(api_key)  # SecretStr('**********')
+assert api_key.get_secret_value() == "sk-live-123"
+```
+
+Dos salvedades honestas, ambas más débiles que en Rust.
+La privacidad es disciplinaria: `_inner` sigue accesible por convención, así que mantén la construcción dentro del módulo que lo define y prohíbela fuera por review.
+Y no hay borrado de memoria: los `str` de CPython son inmutables y el timing del GC es indefinido, así que nunca prometas un equivalente a `ZeroizeOnDrop`.
+Lo que el wrapper sí garantiza es que el formateo por defecto y los logs redactan, y que enviar exige la válvula explícita.
+
+### Lints del toolchain como invariantes
+
+Python no tiene `#![deny(...)]`, pero `mypy --strict` más `ruff` es la misma idea: la invariante más barata.
+Fíjalos en `pyproject.toml` para que el shell, no el review, custodie las reglas:
+
+```toml
+[tool.mypy]
+strict = true
+
+[tool.ruff.lint]
+select = ["B", "S", "T"]
+```
+
+`mypy --strict` rechaza `def`s sin tipos como `deny(missing_docs)` rechaza items sin documentar.
+La regla `S101` de `ruff` prohíbe `assert` para validación (los asserts desaparecen bajo `python -O`), y `T201` prohíbe `print` en código de biblioteca en favor del logger del borde.
+Un hueco sin equivalente: `#[must_use]`.
+Ruff no marca una llamada descartada a `parse_email(...)`, así que un `Result` ignorado sigue siendo un catch de review en Python.
+Nómbralo en los checklists de review en vez de fingir que el toolchain lo cubre.
+
 ---
 
 ## 9. Patrón de Arquitectura: Functional Core, Imperative Shell (FastAPI y Pydantic)
@@ -1115,6 +1171,8 @@ El núcleo se mantiene rápido porque los efectos viven solo en el shell.
 | Estado de workflow | Flags booleanos como `is_paid` comprobados con `if` antes de cada acción | Type-state `OrderState[Draft]` a `OrderState[Paid]` con genéricos por etapa | Las transiciones ilegales son errores del verificador, los métodos por etapa desaparecen por tipo |
 | Costo en hot path | `model_validate` repetido en handler, servicio y repo para el mismo valor | Parsea una vez en el borde, propaga value objects con `slots` sin revalidar | Prueba sin impuesto de rendimiento, ideal para routers y workers |
 | Testing | Casos unitarios a mano con pocas cadenas literales | Hypothesis con cientos de entradas Unicode y adversariales más shrinking y `@example` | Confianza matemática en parsers, reproductores mínimos al fallar |
+| Redacción de secretos | `__str__` en value objects con PII, redacción por comentario | `CustomerEmail` con `__repr__` redactado más `SecretStr`, con `expose_for_sending()` explícito | Los logs redactan por defecto, enviar exige la válvula explícita |
+| Lints del toolchain | "Sin `assert` para validar, sin `print` en bibliotecas" como comentarios | `mypy --strict` más `ruff` `S101`/`T201` fijados en `pyproject.toml` | La disciplina se vuelve un fallo de chequeo, el review queda para `Result`s ignorados |
 | Arquitectura | Handlers mezclan parseo Pydantic, llamadas a BD y reglas de negocio con `async` en todas partes | Núcleo puro síncrono con `calculate_refund` más shell delgado async de FastAPI con Pydantic | El núcleo es trivialmente testeable y portable, los efectos están aislados y auditables |
 
 Guarda esta tabla como checklist de review.
@@ -1146,6 +1204,8 @@ Nunca filtres `Exception` pelados desde APIs de dominio, y nunca dejes que el do
 **5. Empuja workflows y costos al sistema de tipos.**
 Usa type-state con genéricos por etapa para ciclos ordenados con dos o más operaciones distintas.
 Usa value objects con `slots` en hot paths en lugar de parseo Pydantic repetido.
+Envuelve valores sensibles en `CustomerEmail`/`SecretStr` con formateo redactado.
+Refuerza la disciplina con `mypy --strict` más `ruff` `S101`/`T201`.
 Cubre los parsers con Hypothesis y mantén el shell FastAPI delgado alrededor de un núcleo funcional puro.
 
 Deja de defender cada función contra datos que ya comprobaste.

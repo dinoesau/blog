@@ -1043,6 +1043,75 @@ Run with `vitest run` and keep the failing seed.
 Check that seed in as a regression test.
 Your parser gains mathematical robustness instead of anecdotal coverage: valid shapes always pass, invalid shapes always fail, hostile Unicode never throws, and normalization round-trips.
 
+### Secret wrappers: brands cannot redact, opaque classes can
+
+A brand is still a `string` at runtime: `` `sending to ${email}` ``, `console.log`, and `JSON.stringify` all leak by construction.
+Where the value is sensitive, pay for one opaque class with a truly private field and redacted formatting:
+
+```ts
+// domain/customer-email.ts - the only module allowed to mint CustomerEmail.
+export class CustomerEmail {
+  readonly #inner: string;
+
+  private constructor(inner: string) {
+    this.#inner = inner;
+  }
+
+  static parse(raw: unknown): CustomerEmail | null {
+    if (typeof raw !== "string" || !raw.includes("@")) {
+      return null;
+    }
+    return new CustomerEmail(raw.trim());
+  }
+
+  /** Explicit escape hatch for the sending edge only. */
+  exposeForSending(): string {
+    return this.#inner;
+  }
+
+  redacted(): "[redacted]" {
+    return "[redacted]";
+  }
+
+  toString(): "[redacted]" {
+    return "[redacted]";
+  }
+
+  toJSON(): "[redacted]" {
+    return "[redacted]";
+  }
+}
+```
+
+The trade-off is explicit: brands stay zero-runtime for ordinary values, while PII pays one allocation for redaction by default.
+Keep the brand for shape proofs, reach for the class where a leaked template literal would be an incident.
+
+### ESLint rules as invariants
+
+TypeScript has no `#![deny(...)]`, but a strict ESLint config is the same idea: the cheapest invariant.
+Pin the rules that guard this guide's boundaries:
+
+```js
+// eslint.config.mjs
+export default [
+  {
+    rules: {
+      // The single sanctioned `as` lives in the smart constructor module.
+      "@typescript-eslint/consistent-type-assertions": ["error", { assertionStyle: "never" }],
+      // The closest thing to #[must_use]: never drop a promise.
+      "@typescript-eslint/no-floating-promises": "error",
+      "@typescript-eslint/no-unused-expressions": "error",
+      // Logs belong to the shell-owned logger, never console.
+      "no-console": "error",
+    },
+  },
+];
+```
+
+One gap with no equivalent: `#[must_use]` for synchronous values.
+`no-unused-expressions` does not flag a discarded `parseEmail(...)` call, so a dropped `Result` stays a review catch in TypeScript.
+Pair it with `strict` plus `noUncheckedIndexedAccess` so edge cases stay compile-time obligations instead of production incidents.
+
 ---
 
 ## 9. Architecture Pattern: Functional Core, Imperative Shell (Hono/Fastify and Zod)
@@ -1190,6 +1259,8 @@ The core stays fast because effects live only in the shell.
 | Workflow state | Boolean flags like `isPaid` checked with `if` before each action | Type-state `Order<Draft>` to `Order<Paid>` with stage-tagged generics | Illegal transitions do not compile, stage-specific methods disappear by type |
 | Hot-path cost | `safeParse` repeated in handler, service, and repo for the same value | Parse once at the edge, thread zero-runtime brands with no allocation | Proof without performance tax, ideal for validators and routers |
 | Testing | Hand-picked unit cases with a few literal strings | `fast-check` with hundreds of Unicode and adversarial inputs plus shrinking and seeds | Mathematical confidence in parsers, minimal reproducers on failure |
+| Secret redaction | Branded PII strings, redaction by comment | Opaque `CustomerEmail` class with `#inner` plus redacted `toString`/`toJSON`, explicit `exposeForSending()` | Logs redact by default, sending requires the explicit hatch |
+| Toolchain lints | "Single sanctioned `as`, no `console`" as comments | `consistent-type-assertions: never` plus `no-floating-promises` and `no-console` | Discipline becomes a lint failure, review stays for dropped `Result`s |
 | Architecture | Handlers mix Zod parsing, DB calls, and business rules with `async` everywhere | Pure sync core with `calculateRefund` plus thin async Hono and Zod shell | Core is trivially testable and portable, effects are isolated and auditable |
 
 Keep this table as a review checklist.
@@ -1221,6 +1292,8 @@ Never leak `unknown` or thrown `string` from domain APIs, and never let the doma
 **5. Push workflows and costs into the type system.**
 Use type-state with stage generics for ordered lifecycles with two or more distinct operations.
 Use zero-runtime brands on hot paths instead of wrapper objects.
+Wrap sensitive values in the opaque `CustomerEmail` class with redacted formatting.
+Enforce the discipline with `consistent-type-assertions: never`, `no-floating-promises`, and `no-console`.
 Cover parsers with `fast-check` and keep the Hono or Fastify shell thin around a pure functional core.
 
 Stop defending every function against data you already checked.
