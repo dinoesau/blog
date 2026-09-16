@@ -61,6 +61,8 @@ reqwest = { version = "0.12", features = ["json"] }
 uuid = { version = "1", features = ["v4"] }
 tracing = "0.1"
 nutype = "0.6"
+secrecy = "0.8"
+zeroize = "1"
 # syn/quote below belong to the separate -macros crate, not the main crate.
 # hyphens shown for the derive sketch only.
 
@@ -535,6 +537,66 @@ pub fn process_refund_typed(order: &Order, amount: Cents) -> Result<String, Doma
 You still need `as_str` or `Display` accessors, and that is intentional.
 Callers can read the value but cannot forge it.
 That is encapsulation without runtime cost.
+
+### Secret newtypes: PII redaction by type, not by discipline
+
+`Email` proves shape, but its `Display` and `AsRef<str>` implementations make every `tracing::error!(email = %email)` a PII leak that compiles.
+Redaction by comment does not survive the next contributor.
+Wrap PII at the boundary in a type with no formatting escape hatches.
+
+```rust
+// src/domain/email.rs, same module as Email so the private field stays reachable.
+pub struct CustomerEmail(Email);
+
+impl CustomerEmail {
+    // No Display, no AsRef<str>, no Deref. Only explicit escape hatches:
+    pub fn expose_for_sending(&self) -> &str {
+        self.0.as_str()
+    }
+
+    pub fn redacted(&self) -> &'static str {
+        "[redacted]"
+    }
+}
+
+// Debug is redacted by hand: a derived Debug would print the inner Email.
+impl std::fmt::Debug for CustomerEmail {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("CustomerEmail([redacted])")
+    }
+}
+
+impl From<Email> for CustomerEmail {
+    fn from(email: Email) -> Self {
+        Self(email)
+    }
+}
+```
+
+`format!("{email}")` still works for `Email` in non-PII contexts like receipts.
+`format!("{customer}")` fails with `E0277` because `CustomerEmail` implements no `Display`.
+Logging can only print `[redacted]` unless the call site explicitly asks for `expose_for_sending()`.
+
+For password- and token-like values, add memory hygiene with `secrecy` plus `zeroize` (see the `Cargo.toml` sketch above).
+
+```rust
+use secrecy::{ExposeSecret, SecretString};
+use zeroize::{Zeroize, ZeroizeOnDrop};
+
+#[derive(Zeroize, ZeroizeOnDrop)]
+pub struct PlainPassword(SecretString);
+
+impl PlainPassword {
+    pub fn expose_for_hashing(&self) -> &str {
+        self.0.expose_secret()
+    }
+}
+```
+
+`ZeroizeOnDrop` scrubs the secret from memory when the value drops.
+(`SecretString` already redacts `Debug`.)
+Keep `Email` for shape validation and `CustomerEmail` for PII handling.
+Parse once into `Email`, wrap once into `CustomerEmail`, and let the compiler reject the accidental log.
 
 ---
 
@@ -1426,12 +1488,14 @@ pub async fn refund_handler(
     Json(raw): Json<RefundRequestDto>,
 ) -> Result<impl IntoResponse, AppError> {
     use crate::domain::cents::Cents;
-    use crate::domain::email::Email;
+    use crate::domain::email::{CustomerEmail, Email};
     use crate::domain::order_id::OrderId;
     // 1. Parse at the boundary. Malformed email rejects before any DB hit.
     // DB email remains authoritative; request email proves shape, not identity.
     let order_id = OrderId::parse(&raw.order_id).map_err(DomainError::InvalidOrderId)?;
-    let _request_email = Email::parse(&raw.email).map_err(DomainError::InvalidEmail)?;
+    // Wrapped at once: CustomerEmail has no Display, so accidental logging fails to compile.
+    let _request_email =
+        CustomerEmail::from(Email::parse(&raw.email).map_err(DomainError::InvalidEmail)?);
     let amount = Cents::parse(raw.amount_cents).map_err(DomainError::InvalidAmount)?;
 
     // 2. Load persisted state through the port. Never fabricate Order from request amount.
@@ -1461,7 +1525,8 @@ impl IntoResponse for AppError {
             let (status, message) = match &self {
             Self::Domain(err) => {
                 // Never duplicate the table above: status comes from refund_status_code.
-                // Never log raw email via Display here; infra arm below redacts.
+                // Request identity travels as CustomerEmail, which has no Display:
+                // tracing::error!(email = %email) fails to compile here. Log ids only.
                 (crate::domain::error::refund_status_code(err), err.to_string())
             }
             Self::Database(e) => {
@@ -1484,7 +1549,7 @@ impl IntoResponse for AppError {
 }
 ```
 
-Production notes: require `Idempotency-Key` on POST /refund with dedup so retries never double-charge. Emit `refund_total{kind}` counter and latency histogram with request_id/order_id spans. Never log raw email or DSNs via Display. Keep `calculate_refund` sync and fast; EmailRef must be promoted to owned before any await so futures stay 'static + Send.
+Production notes: require `Idempotency-Key` on POST /refund with dedup so retries never double-charge. Emit `refund_total{kind}` counter and latency histogram with request_id/order_id spans. Never log CustomerEmail or DSNs: CustomerEmail exposes no Display by design, so log request_id/order_id spans only. Keep `calculate_refund` sync and fast; EmailRef must be promoted to owned before any await so futures stay 'static + Send.
 Testing splits cleanly.
 Unit test `calculate_refund` with plain structs and no mocks.
 Integration test the handler with `InMemoryOrderRepo` plus `tower::ServiceExt::oneshot` and real JSON payloads.
@@ -1508,6 +1573,8 @@ The core stays fast and deterministic because effects live only in the shell.
 | Hot-path cost | Cloned `String` newtypes allocated on every layer | Borrowed `EmailRef<'a>` avoids revalidation allocation, promote to owned once; measure serde plus DB before claiming wins | Proof without repeated validation tax, ideal for routers and parsers |
 | Testing | Hand-picked `#[test]` cases with a few literal strings | `proptest` with thousands of Unicode and adversarial inputs plus shrinking | Mathematical confidence in parsers, minimal reproducers on failure |
 | Architecture | Handlers mix Serde parsing, DB calls, and business rules with `async` everywhere | Pure sync core with `calculate_refund` plus thin async Axum shell behind an `OrderRepository` trait port | Core is trivially testable and portable, effects are isolated behind swappable adapters |
+| Secrets | `Email` with `Display` logged via `%email` by discipline | `CustomerEmail` with no `Display` plus `secrecy`/`zeroize` for tokens | PII leaks become compile errors, secrets scrubbed on drop |
+| Lints | "Never `unwrap`" enforced by review comments | `forbid(unsafe_code)` plus `deny(clippy::unwrap_used, clippy::panic)` and `#[must_use]` | Discipline becomes build failures, `Deref` backdoors banned |
 
 Keep this table as a review checklist.
 If a row drifts left, push the proof back into the type.
@@ -1541,6 +1608,51 @@ Cover parsers with `proptest` and keep the Axum shell thin around a pure functio
 
 Stop defending every function against data you already checked.
 Prove it once, encode it in a type, and let `rustc` stand guard while you model the domain.
+
+---
+
+## Appendix A: Compiler Lints as Invariants
+
+Rule 5 says to push invariants into the compiler, but type-state plus the `size_of` assert are the only machine-checked invariants in this guide.
+The cheapest invariant is a lint header at the crate root.
+
+```rust
+// src/lib.rs or src/main.rs, before any item.
+#![forbid(unsafe_code)]
+#![deny(missing_docs)]
+#![deny(clippy::unwrap_used, clippy::expect_used)]
+#![deny(clippy::panic)]
+```
+
+`clippy::unwrap_used` and `clippy::expect_used` turn the production rule "returns `Result`, never `unwrap`" from a comment into a build failure.
+`clippy::panic` bans `panic!` outside tests.
+`forbid(unsafe_code)` rejects `unsafe` in your crate while leaving dependencies untouched.
+`deny(missing_docs)` forces every new public item, including `CustomerEmail` and its hatches, to carry documentation.
+
+Scope the strictness where fixtures live.
+The examples in this guide use `.expect("fixture is valid")` to bootstrap tests.
+Allow it there and nowhere else.
+
+```rust
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod tests { /* ... */ }
+```
+
+Two more rules complete the header.
+Mark value accessors `#[must_use]` so discarded proofs warn.
+
+```rust
+#[must_use]
+pub fn value(self) -> u64 {
+    self.0
+}
+```
+
+(`parse` needs no attribute because `Result` is already `#[must_use]`.)
+And never implement `Deref<Target = str>` for newtypes.
+`Deref` silently re-exposes every `str` method and weakens the boundary the module was built to enforce.
+Implement `AsRef<str>` and `Display` deliberately per type instead.
 
 ---
 
