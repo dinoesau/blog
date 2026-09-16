@@ -48,6 +48,16 @@ series:
 * This post is the Python chapter of the Error Handling series.
   It assumes Python 3.12+, `mypy --strict`, and Pydantic v2, and uses `Generic`, `Literal`, `Annotated`, `TypeVar`, `Never`, `match`, FastAPI, and Hypothesis in examples. `Result` is a custom `Ok | Err` union, not stdlib. It builds every pattern from dataclasses, modules, and `Result`.
 
+```toml
+# pyproject.toml sketch with pinned versions.
+[project]
+requires-python = ">=3.12"
+dependencies = ["fastapi>=0.110", "pydantic>=2"]
+
+[project.optional-dependencies]
+test = ["hypothesis>=6", "pytest>=8"]
+```
+
 ---
 
 ## 1. Introduction: The Antipattern of Defensive Python
@@ -317,6 +327,16 @@ class InvalidStage:
 
 
 @dataclass(frozen=True, slots=True)
+class InvalidRequest:
+    detail: str
+
+
+@dataclass(frozen=True, slots=True)
+class InvalidUser:
+    detail: InvalidUserId
+
+
+@dataclass(frozen=True, slots=True)
 class ExceedsMax:
     max_cents: int
 
@@ -385,7 +405,7 @@ then calls domain `parse` for semantics. Never import `BaseModel` inside `Email`
 ```python
 from typing import Annotated
 
-from pydantic import BaseModel, ValidationError, field_validator
+from pydantic import BaseModel, ValidationError
 
 
 class _RefundInput(BaseModel):
@@ -407,17 +427,17 @@ class TrustedRefund:
     amount: Cents
 
 
-def parse_refund_request(data: object) -> Result[TrustedRefund, list[DomainError] | list[str]]:
+def parse_refund_request(data: object) -> Result[TrustedRefund, list[DomainError]]:
     try:
         raw = _RefundInput.model_validate(data)
     except ValidationError:
         # Never return exc.errors() to clients: exposes schema internals.
-        return Err(["invalid request"])
+        return Err([InvalidRequest(detail="invalid request")])
     user_id = UserId.parse(raw.user_id)
     amount = Cents.parse(raw.amount_cents)
     errors: list[DomainError] = []
     if isinstance(user_id, Err):
-        errors.append(UserNotFound(user_id=raw.user_id))
+        errors.append(InvalidUser(detail=user_id.error))
     if isinstance(amount, Err):
         errors.append(InvalidAmount(detail=amount.error))
     if errors:
@@ -460,17 +480,58 @@ from typing import Literal
 
 
 @dataclass(frozen=True, slots=True)
-class Card:
-    kind: Literal["card"] = "card"
-    # No "" default: caller must provide an already-validated last four.
-    last_four: str
+class LastFour:
+    """Four-digit card suffix. Mint only via parse_last_four."""
+    _value: str
 
 
 @dataclass(frozen=True, slots=True)
+class InvalidLastFour:
+    received: str
+
+
+def parse_last_four(raw: object) -> Result[LastFour, InvalidLastFour]:
+    import re
+
+    if not isinstance(raw, str) or re.fullmatch(r"[0-9]{4}", raw) is None:
+        return Err(InvalidLastFour(received=str(raw)))
+    return Ok(LastFour(_value=raw))
+
+
+@dataclass(frozen=True, slots=True)
+class Iban:
+    """Bank account identifier. Mint only via parse_iban."""
+    _value: str
+
+
+@dataclass(frozen=True, slots=True)
+class InvalidIban:
+    received: str
+
+
+def parse_iban(raw: object) -> Result[Iban, InvalidIban]:
+    import re
+
+    if (
+        not isinstance(raw, str)
+        or len(raw) < 15
+        or len(raw) > 32
+        or re.fullmatch(r"[A-Z]{2}[0-9A-Z]+", raw, re.IGNORECASE) is None
+    ):
+        return Err(InvalidIban(received=str(raw)))
+    return Ok(Iban(_value=raw))
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Card:
+    kind: Literal["card"] = "card"
+    last_four: LastFour
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class Transfer:
     kind: Literal["transfer"] = "transfer"
-    # No "" default: caller must provide an already-validated IBAN.
-    iban: str
+    iban: Iban
 
 
 @dataclass(frozen=True, slots=True)
@@ -480,6 +541,8 @@ class Cash:
 
 type PaymentMethod = Card | Transfer | Cash
 ```
+
+The payloads are branded too: `last_four` and `iban` are minted only by `parse_last_four` and `parse_iban`, so a two-digit `"12"` never reaches the core.
 
 Product types combine independent facts.
 
@@ -493,7 +556,7 @@ class OrderShape:
 ```
 
 There is no `None` escape hatch, no stringly typed `method: str`, and no half-built object.
-Exhaustiveness is enforced with a `Never`-taking helper. Never use the builtin `assert` for invariants: it vanishes under `python -O`.
+Exhaustiveness is enforced with a `Never`-taking helper. Never use the builtin `assert` to enforce domain invariants: it vanishes under `python -O`. Narrowing asserts after an exhaustive check only restate what the checker already proved.
 
 ```python
 from typing import Never
@@ -516,7 +579,7 @@ def fee_for(method: PaymentMethod) -> int:
 ```
 
 Add a new variant such as `Crypto` and `fee_for` fails type-checking until you handle it.
-With `mypy --strict`, an unhandled `match` arm without a wildcard is flagged when the subject is a union.
+With `mypy --strict`, a `match` ending in `case _: return assert_never(method)` breaks the check when a union arm goes unhandled: the narrowed remainder is no longer `Never`.
 That check break is the feature.
 
 A total function is defined for 100 percent of its input values.
@@ -613,7 +676,7 @@ def build_order_clean(raw_email: object, raw_amount: object) -> Result[OrderShap
         return Err(InvalidAmount(detail=amount.error.detail))
     user = UserId.parse("00000000-0000-4000-8000-000000000000")
     if isinstance(user, Err):
-        return Err(InvalidOrderId(detail=user.error.detail))
+        return Err(InvalidUser(detail=user.error))
     return Ok(OrderShape(user_id=user.value, email=email.value, amount=amount.value, method=Cash()))
 ```
 
@@ -799,19 +862,25 @@ class AlreadyRefunded:
     order_id: OrderId
 
 
-type DomainError = InvalidEmail | InvalidAmount | InvalidOrderId | InvalidStage | ExceedsMax | UserNotFound | InsufficientFunds | AlreadyRefunded
+type DomainError = InvalidEmail | InvalidAmount | InvalidOrderId | InvalidStage | InvalidRequest | InvalidUser | ExceedsMax | UserNotFound | InsufficientFunds | AlreadyRefunded
 ```
 
 Exhaustive `match` now forces product decisions, and `assert_never` turns a forgotten case into a loud failure.
+The mapping returns the closed union `HttpStatus`, so `return 999` fails the check.
 
 ```python
-def domain_to_status(error: DomainError) -> int:
+from typing import Literal
+
+type HttpStatus = Literal[400, 404, 422, 500]
+
+
+def domain_to_status(error: DomainError) -> HttpStatus:
     match error:
-        case InvalidEmail() | InvalidAmount():
+        case InvalidEmail() | InvalidAmount() | InvalidUser():
             return 400
         case UserNotFound():
             return 404
-        case InvalidOrderId() | InvalidStage():
+        case InvalidOrderId() | InvalidStage() | InvalidRequest():
             return 400
         case InsufficientFunds() | AlreadyRefunded() | ExceedsMax():
             return 422
@@ -822,6 +891,8 @@ def domain_to_message(error: DomainError) -> str:
     match error:
         case InvalidEmail(detail=detail):
             return f"invalid email: {type(detail).__name__}"
+        case InvalidUser(detail=detail):
+            return f"invalid user: {detail.detail}"
         case InvalidAmount(detail=detail):
             detail_str = detail.detail if isinstance(detail, InvalidCents) else detail
             return f"invalid amount: {detail_str}"
@@ -835,6 +906,8 @@ def domain_to_message(error: DomainError) -> str:
             return f"invalid order id: {detail}"
         case InvalidStage(detail=detail):
             return f"invalid stage: {detail}"
+        case InvalidRequest(detail=detail):
+            return f"invalid request: {detail}"
         case ExceedsMax(max_cents=max_cents):
             return f"amount exceeds maximum {max_cents}"
         # No wildcard: adding a variant must fail type-check (missing return).
@@ -861,11 +934,11 @@ class GatewayError:
 type AppError = DomainError | DbError | GatewayError
 
 
-def app_to_status(error: AppError) -> int:
+def app_to_status(error: AppError) -> HttpStatus:
     match error:
         case DbError() | GatewayError():
             return 500
-        case InvalidEmail() | InvalidAmount() | InvalidOrderId() | InvalidStage() | ExceedsMax() | UserNotFound() | InsufficientFunds() | AlreadyRefunded():
+        case InvalidEmail() | InvalidAmount() | InvalidOrderId() | InvalidStage() | InvalidRequest() | InvalidUser() | ExceedsMax() | UserNotFound() | InsufficientFunds() | AlreadyRefunded():
             return domain_to_status(error)
         case _:
             return assert_never(error)
@@ -879,13 +952,13 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-def report_app_error(error: AppError) -> tuple[int, dict[str, str]]:
+def report_app_error(error: AppError) -> tuple[HttpStatus, dict[str, str]]:
     # Domain is never imported by a logger module; the shell owns this call.
     match error:
         case DbError() | GatewayError():
             logger.error("infrastructure failure", extra={"kind": type(error).__name__, "cause": str(error.cause)})
             return 500, {"error": "internal error"}
-        case InvalidEmail() | InvalidAmount() | InvalidOrderId() | InvalidStage() | ExceedsMax() | UserNotFound() | InsufficientFunds() | AlreadyRefunded():
+        case InvalidEmail() | InvalidAmount() | InvalidOrderId() | InvalidStage() | InvalidRequest() | InvalidUser() | ExceedsMax() | UserNotFound() | InsufficientFunds() | AlreadyRefunded():
             return domain_to_status(error), {"error": domain_to_message(error)}
         case _:
             return assert_never(error)
@@ -985,7 +1058,7 @@ def rehydrate_paid(
 ) -> Result[OrderState[Paid], InvalidStage]:
     if stage != "paid":
         return Err(InvalidStage(detail="cannot rehydrate paid order from non-paid stage"))
-    return Ok(OrderState(order_id=order_id, amount=amount, state=Paid()))
+    return Ok(OrderState(order_id=str(order_id), amount=amount, state=Paid()))
 ```
 
 Python cannot destroy the old `draft` binding the way Rust moves it.
@@ -1041,20 +1114,6 @@ Property-based testing with [Hypothesis](https://hypothesis.readthedocs.io/) thr
 ```python
 from hypothesis import assume, example, given, settings
 from hypothesis import strategies as st
-
-# Pinned in pyproject: pydantic>=2, fastapi>=0.110, hypothesis>=6.
-# Requires Python 3.12+ for type X | Y unions.
-
-```toml
-# pyproject.toml sketch with pinned versions.
-[project]
-requires-python = ">=3.12"
-dependencies = ["fastapi>=0.110", "pydantic>=2"]
-
-[project.optional-dependencies]
-test = ["hypothesis>=6", "pytest>=8"]
-``` On 3.10 LTS use X | Y via
-# from __future__ import annotations or typing.Union as fallback.
 
 email_strategy = st.tuples(
     st.text(alphabet="abcdefghijklmnopqrstuvwxyz0123456789", min_size=1, max_size=16),
@@ -1273,7 +1332,7 @@ async def refund_handler(
 
     order_id = OrderId.parse(shaped.order_id)
     if isinstance(order_id, Err):
-        err: DomainError = UserNotFound(user_id=shaped.order_id)
+        err = InvalidOrderId(detail=order_id.error.detail)
         return JSONResponse({"error": domain_to_message(err)}, status_code=domain_to_status(err))
 
     # 2. Load persisted state through the port. Never fabricate Order from request amount.
@@ -1284,7 +1343,7 @@ async def refund_handler(
             status_code=app_to_status(loaded.error),
         )
     if loaded.value is None:
-        err: DomainError = UserNotFound(user_id=shaped.order_id)
+        err = UserNotFound(user_id=shaped.order_id)
         return JSONResponse({"error": domain_to_message(err)}, status_code=domain_to_status(err))
     order = loaded.value
     cap = Cents.parse(500_000)
