@@ -285,6 +285,8 @@ export type Email = Brand<string, "Email">;
 export type UserId = Brand<string, "UserId">;
 export type OrderId = Brand<string, "OrderId">;
 export type Cents = Brand<number, "Cents">;
+export type LastFour = Brand<string, "LastFour">;
+export type Iban = Brand<string, "Iban">;
 ```
 
 Each brand is a distinct string literal, so `Email` is not assignable to `UserId` even though both wrap `string`.
@@ -529,11 +531,33 @@ Sum types enumerate exclusive alternatives.
 
 ```ts
 // domain/payment.ts - a sum type with three mutually exclusive cases.
+import type { Iban, LastFour } from "./brand.js";
+import type { Result } from "./result.js";
+
 export type PaymentMethod =
-  | { readonly kind: "card"; readonly lastFour: string }
-  | { readonly kind: "transfer"; readonly iban: string }
+  | { readonly kind: "card"; readonly lastFour: LastFour }
+  | { readonly kind: "transfer"; readonly iban: Iban }
   | { readonly kind: "cash" };
+
+export type LastFourError = { readonly kind: "InvalidLastFour"; readonly received: string };
+export type IbanError = { readonly kind: "InvalidIban"; readonly received: string };
+
+export function parseLastFour(raw: unknown): Result<LastFour, LastFourError> {
+  if (typeof raw !== "string" || !/^[0-9]{4}$/.test(raw)) {
+    return { ok: false, error: { kind: "InvalidLastFour", received: String(raw) } };
+  }
+  return { ok: true, value: raw as LastFour };
+}
+
+export function parseIban(raw: unknown): Result<Iban, IbanError> {
+  if (typeof raw !== "string" || raw.length < 15 || raw.length > 32 || !/^[A-Z]{2}[0-9A-Z]+$/i.test(raw)) {
+    return { ok: false, error: { kind: "InvalidIban", received: String(raw) } };
+  }
+  return { ok: true, value: raw as Iban };
+}
 ```
+
+The payloads are branded too: `lastFour` and `iban` are minted only by `parseLastFour` and `parseIban`, so a two-digit `"12"` never reaches the core.
 
 Product types combine independent facts.
 
@@ -629,11 +653,11 @@ export type Result<T, E> =
   | { readonly ok: true; readonly value: T }
   | { readonly ok: false; readonly error: E };
 
-export function ok<T>(value: T): Result<T, never> {
+export function ok<const T>(value: T): Result<T, never> {
   return { ok: true, value };
 }
 
-export function err<E>(error: E): Result<never, E> {
+export function err<const E>(error: E): Result<never, E> {
   return { ok: false, error };
 }
 
@@ -817,32 +841,15 @@ const policy = {
 Use them for autocomplete and readable errors, but keep the smart constructor as the single enforcement point.
 
 Mechanize repetition with small helpers, never with hidden business logic.
+One helper that does not earn its keep is a generic string-brand factory: its error type widens to `{ readonly kind: string }`, which no caller can exhaustively match, so a new failure mode slips past `assertNever`.
+Delete it and keep one smart constructor per type with a closed error union, exactly like `parseEmail` and `parseCents` above.
+Each module stays small, each error stays enumerable, and the compiler still breaks the build when the union grows.
 
 ```ts
-// helpers/smart.ts - a factory that mechanizes the proof shape.
-import { z } from "zod";
-import type { Brand } from "./brand.js";
-import type { Result } from "./result.js";
-
-// Generic mint for string brands. Sanctioned only because it lives with the helper
-// and callers still declare the full rule inline. Do not add a second Email parser:
-// canonical Email comes from domain/email.ts parseEmail. This is the same rule via Zod.
-export function makeStringBrand<Name extends string>(name: Name, schema: z.ZodType<string>) {
-  return {
-    schema,
-    parse(raw: unknown): Result<Brand<string, Name>, { readonly kind: string; readonly name: Name }> {
-      const parsed = schema.safeParse(raw);
-      if (!parsed.success) {
-        return { ok: false, error: { kind: "invalid", name } };
-      }
-      // Single sanctioned cast for this generic helper. Prefer per-type parseEmail in real code.
-      return { ok: true, value: parsed.data as Brand<string, Name> };
-    },
-  };
-}
-
-// Same email rule expressed via Zod. Pick one source of truth per codebase.
-export const EmailParser = makeStringBrand("Email", z.string().trim().email());
+// ❌ helpers/smart.ts - deleted. A generic factory widens errors to kind: string.
+// No caller can exhaustively match `string`, so new failure modes go unnoticed.
+// Keep one smart constructor per type with a closed error union instead:
+// see parseEmail in domain/email.ts and parseCents in domain/money.ts above.
 ```
 
 The rule for macros, decorators, and helpers is strict: the helper may remove boilerplate around `safeParse`, `trim`, and `transform`, but the invariant itself must stay visible in the domain module.
@@ -884,13 +891,16 @@ export type DomainError =
 ```
 
 Exhaustive `switch` now forces product decisions, and `assertNever` turns a forgotten case into a compile error.
+The mapping returns the closed union `HttpStatus`, so `return 999` fails the build.
 
 ```ts
 // domain/status.ts - single mapping shared by shell and app, checked by the compiler.
 import { assertNever } from "./assert.js";
 import type { DomainError } from "./errors.js";
 
-export function domainToStatus(error: DomainError): number {
+export type HttpStatus = 400 | 404 | 422 | 500;
+
+export function domainToStatus(error: DomainError): HttpStatus {
   switch (error.kind) {
     case "InvalidEmail":
     case "InvalidAmount":
@@ -935,14 +945,14 @@ Wrap infrastructure errors once at the application layer with an explicit `cause
 ```ts
 // app/errors.ts - domain facts plus operational failures.
 // App imports status from domain, never from shell. Single table, no duplication.
-import { domainToStatus } from "../domain/status.js";
+import { domainToStatus, type HttpStatus } from "../domain/status.js";
 
 export type AppError =
   | { readonly kind: "Domain"; readonly error: DomainError }
   | { readonly kind: "Database"; readonly cause: unknown }
   | { readonly kind: "Gateway"; readonly cause: unknown };
 
-export function appToStatus(error: AppError): number {
+export function appToStatus(error: AppError): HttpStatus {
   switch (error.kind) {
     case "Domain":
       return domainToStatus(error.error);
@@ -1300,15 +1310,18 @@ export type RefundRequestDto = z.infer<typeof RefundRequestDto>;
 The Hono handler bridges the two worlds and nothing more.
 Decouple it from infrastructure with an interface port.
 The port lives in the app layer and speaks only domain types.
+Lookups return `Result`, never `null`: a missing row is a `Domain` error the shell maps to 404, an outage is `Database` mapped to 500.
 The shell provides the adapter and the handler receives it through a factory.
 
 ```ts
 // app/ports.ts - hexagon port, domain types only.
 import type { OrderId } from "../domain/brand.js";
 import type { OrderSnapshot, RefundPolicy } from "../core/refunds.js";
+import type { Result } from "../domain/result.js";
+import type { AppError } from "./errors.js";
 
 export interface OrderRepository {
-  find(orderId: OrderId): Promise<OrderSnapshot | null>;
+  find(orderId: OrderId): Promise<Result<OrderSnapshot, AppError>>;
 }
 
 export interface AppDeps {
@@ -1320,8 +1333,11 @@ export interface AppDeps {
 ```ts
 // shell/postgres-repo.ts - one adapter behind the port.
 // SQL rows re-enter the domain through parseOrderId, parseEmail, and parseCents.
-import type { OrderId } from "../domain/brand.js";
+import type { OrderId, UserId } from "../domain/brand.js";
 import type { OrderSnapshot } from "../core/refunds.js";
+import type { Result } from "../domain/result.js";
+import { err, ok } from "../domain/result.js";
+import type { AppError } from "../app/errors.js";
 import type { OrderRepository } from "../app/ports.js";
 
 export class PostgresOrderRepository implements OrderRepository {
@@ -1330,9 +1346,18 @@ export class PostgresOrderRepository implements OrderRepository {
       query: (sql: string, params: unknown[]) => Promise<{ rows: unknown[] }>;
     },
   ) {}
-  async find(orderId: OrderId): Promise<OrderSnapshot | null> {
-    const _ = (orderId, this.pool);
-    return null;
+  async find(orderId: OrderId): Promise<Result<OrderSnapshot, AppError>> {
+    try {
+      const _ = (orderId, this.pool);
+      // Trimmed example: the refund DTO carries no userId, so the miss reuses the request identity.
+      // Real schemas look up by userId and construct UserNotFound without casts.
+      return err({
+        kind: "Domain",
+        error: { kind: "UserNotFound", userId: orderId as unknown as UserId },
+      });
+    } catch (cause) {
+      return err({ kind: "Database", cause });
+    }
   }
 }
 
@@ -1342,8 +1367,15 @@ export class InMemoryOrderRepository implements OrderRepository {
   seed(order: OrderSnapshot): void {
     this.orders.set(order.orderId as string, order);
   }
-  async find(orderId: OrderId): Promise<OrderSnapshot | null> {
-    return this.orders.get(orderId as string) ?? null;
+  async find(orderId: OrderId): Promise<Result<OrderSnapshot, AppError>> {
+    const found = this.orders.get(orderId as string);
+    if (!found) {
+      return err({
+        kind: "Domain",
+        error: { kind: "UserNotFound", userId: orderId as unknown as UserId },
+      });
+    }
+    return ok(found);
   }
 }
 ```
@@ -1357,7 +1389,6 @@ import { parseCents } from "../domain/money.js";
 import { parseOrderId } from "../domain/order-id.js";
 import { calculateRefund } from "../core/refunds.js";
 import type { DomainError } from "../domain/errors.js";
-import type { UserId } from "../domain/brand.js";
 import type { AppError } from "../app/errors.js";
 import type { AppDeps } from "../app/ports.js";
 import { domainToMessage, domainToStatus } from "../domain/status.js";
@@ -1398,23 +1429,12 @@ export function createRefundHandler(deps: AppDeps): Hono {
     }
 
     // 2. Load persisted state through the port. Never fabricate Order from request amount.
-    let order;
-    try {
-      order = await deps.repo.find(orderId.value);
-    } catch (cause) {
-      const report = reportAppError({ kind: "Database", cause }, console);
+    const found = await deps.repo.find(orderId.value);
+    if (!found.ok) {
+      const report = reportAppError(found.error, console);
       return c.json(report.body, report.status as 400 | 404 | 422 | 500);
     }
-    if (order === null) {
-      // Trimmed example: the refund DTO carries no userId, so the miss reuses the request identity.
-      // Real schemas look up by userId and construct UserNotFound without casts.
-      const userId = orderId.value as unknown as UserId;
-      const report = reportAppError(
-        { kind: "Domain", error: { kind: "UserNotFound", userId } },
-        console,
-      );
-      return c.json(report.body, report.status as 400 | 404 | 422 | 500);
-    }
+    const order = found.value;
     const refund = calculateRefund(order, amount.value, deps.policy);
     if (!refund.ok) {
       const report = reportAppError({ kind: "Domain", error: refund.error }, console);

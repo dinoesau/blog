@@ -460,17 +460,58 @@ from typing import Literal
 
 
 @dataclass(frozen=True, slots=True)
-class Card:
-    kind: Literal["card"] = "card"
-    # No "" default: caller must provide an already-validated last four.
-    last_four: str
+class LastFour:
+    """Four-digit card suffix. Mint only via parse_last_four."""
+    _value: str
 
 
 @dataclass(frozen=True, slots=True)
+class InvalidLastFour:
+    received: str
+
+
+def parse_last_four(raw: object) -> Result[LastFour, InvalidLastFour]:
+    import re
+
+    if not isinstance(raw, str) or re.fullmatch(r"[0-9]{4}", raw) is None:
+        return Err(InvalidLastFour(received=str(raw)))
+    return Ok(LastFour(_value=raw))
+
+
+@dataclass(frozen=True, slots=True)
+class Iban:
+    """Bank account identifier. Mint only via parse_iban."""
+    _value: str
+
+
+@dataclass(frozen=True, slots=True)
+class InvalidIban:
+    received: str
+
+
+def parse_iban(raw: object) -> Result[Iban, InvalidIban]:
+    import re
+
+    if (
+        not isinstance(raw, str)
+        or len(raw) < 15
+        or len(raw) > 32
+        or re.fullmatch(r"[A-Z]{2}[0-9A-Z]+", raw, re.IGNORECASE) is None
+    ):
+        return Err(InvalidIban(received=str(raw)))
+    return Ok(Iban(_value=raw))
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Card:
+    kind: Literal["card"] = "card"
+    last_four: LastFour
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class Transfer:
     kind: Literal["transfer"] = "transfer"
-    # No "" default: caller must provide an already-validated IBAN.
-    iban: str
+    iban: Iban
 
 
 @dataclass(frozen=True, slots=True)
@@ -480,6 +521,8 @@ class Cash:
 
 type PaymentMethod = Card | Transfer | Cash
 ```
+
+The payloads are branded too: `last_four` and `iban` are minted only by `parse_last_four` and `parse_iban`, so a two-digit `"12"` never reaches the core.
 
 Product types combine independent facts.
 
@@ -803,9 +846,15 @@ type DomainError = InvalidEmail | InvalidAmount | InvalidOrderId | InvalidStage 
 ```
 
 Exhaustive `match` now forces product decisions, and `assert_never` turns a forgotten case into a loud failure.
+The mapping returns the closed union `HttpStatus`, so `return 999` fails the check.
 
 ```python
-def domain_to_status(error: DomainError) -> int:
+from typing import Literal
+
+type HttpStatus = Literal[400, 404, 422, 500]
+
+
+def domain_to_status(error: DomainError) -> HttpStatus:
     match error:
         case InvalidEmail() | InvalidAmount():
             return 400
@@ -861,7 +910,7 @@ class GatewayError:
 type AppError = DomainError | DbError | GatewayError
 
 
-def app_to_status(error: AppError) -> int:
+def app_to_status(error: AppError) -> HttpStatus:
     match error:
         case DbError() | GatewayError():
             return 500
@@ -879,7 +928,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-def report_app_error(error: AppError) -> tuple[int, dict[str, str]]:
+def report_app_error(error: AppError) -> tuple[HttpStatus, dict[str, str]]:
     # Domain is never imported by a logger module; the shell owns this call.
     match error:
         case DbError() | GatewayError():
