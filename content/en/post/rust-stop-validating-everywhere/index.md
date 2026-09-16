@@ -589,10 +589,18 @@ pub struct TransferDetails {
 impl TransferDetails {
     pub fn parse(iban: &str) -> Result<Self, IbanError> {
         let t = iban.trim();
-        if t.is_empty() || t.len() > 34 {
+        let mut chars = t.chars();
+        let ok_head = chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+            && chars.next().is_some_and(|c| c.is_ascii_alphabetic());
+        let ok_tail = t.bytes().all(|b| b.is_ascii_alphanumeric());
+        if !(15..=34).contains(&t.chars().count()) || !ok_head || !ok_tail {
             return Err(IbanError::Invalid);
         }
         Ok(Self { iban: t.to_string() })
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.iban
     }
 }
 
@@ -604,7 +612,7 @@ pub enum IbanError {
 impl std::fmt::Display for IbanError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Invalid => write!(f, "iban must be 1-34 chars"),
+            Self::Invalid => write!(f, "iban must be 15-34 chars, starting with two letters"),
         }
     }
 }
