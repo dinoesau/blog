@@ -78,7 +78,7 @@ Update them whenever a post introduces a new tag or category.
 
 ## Deploy
 
-Push to `main`/`master` triggers the GitHub Actions deploy.
+Push to `main` triggers the GitHub Actions deploy.
 `update-theme.yml` runs daily and bumps the theme via `hugo mod get -u`.
 
 Theme config documentation: https://stack.cai.im/config/
